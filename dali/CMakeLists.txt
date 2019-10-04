@@ -73,8 +73,9 @@ target_compile_definitions(${dali_operator_lib} PRIVATE HAVE_AVBSFCONTEXT=1)
 set(exports_map_path "${PROJECT_BINARY_DIR}/stage")
 set(dali_lib_exports "lib${dali_lib}.map")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/${dali_lib_exports}.in" "${exports_map_path}/${dali_lib_exports}")
-target_link_libraries(${dali_lib} PRIVATE ${dali_operator_lib})
+#target_link_libraries(${dali_lib} PRIVATE ${dali_operator_lib})
 # link whole content of dali_operator_lib into dali_lib
+add_dependencies(${dali_lib} ${dali_operator_lib})
 target_link_libraries(${dali_lib} PRIVATE "-Wl,--whole-archive $<TARGET_LINKER_FILE:${dali_operator_lib}> -Wl,--no-whole-archive")
 
 target_link_libraries(${dali_lib} PRIVATE -Wl,--version-script=${exports_map_path}/${dali_lib_exports})
