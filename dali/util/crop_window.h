@@ -68,8 +68,8 @@ struct CropWindow {
   }
 };
 
-  using CropWindowGenerator = std::function<CropWindow(const kernels::TensorShape<>& shape,
-                                                       const TensorLayout& shape_layout)>;
+using CropWindowGenerator = std::function<CropWindow(const kernels::TensorShape<>& shape,
+                                                     const TensorLayout& shape_layout)>;
 
 }  // namespace dali
 
