@@ -19,12 +19,12 @@ namespace dali {
 
 DALI_SCHEMA(SliceAttr)
     .DocStr(R"code(Slice attributes placeholder)code")
-    .AddOptionalArg("axes",
+    .AddOptionalArg("dims",
         R"code(Order of dimensions used for anchor and shape slice inputs, as dimension indexes)code",
         std::vector<int>{1, 0})
-    .AddOptionalArg("axis_names",
+    .AddOptionalArg("dim_names",
         R"code(Order of dimensions used for anchor and shape slice inputs, as described in layout.
-If provided, `axis_names` takes higher priority than `axes`)code",
+If provided, `dim_names` takes higher priority than `dims`)code",
         "WH")
     .AddOptionalArg("normalized_anchor",
         R"code(Whether or not the `anchor` input should be interpreted as normalized (range [0.0, 1.0])
