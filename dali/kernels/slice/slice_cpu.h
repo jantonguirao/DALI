@@ -102,6 +102,11 @@ void SliceKernelImplChannelLast(OutputType *output,
   int64_t in_nchannels = in_shape[channel_dim];
   int64_t npixels = out_shape[d];
 
+  assert(in_strides[d + 1] == 1);
+  assert(in_strides[d] == in_shape[1]);
+  assert(out_strides[d + 1] == 1);
+  assert(out_strides[d] == out_shape[1]);
+
   if (NeedPad) {
     // If the whole row is out of bounds, just fill
     if (OutOfBounds) {
@@ -119,11 +124,8 @@ void SliceKernelImplChannelLast(OutputType *output,
     if (pad_pixels_before > 0) {
       PadFill(output, fill_values, pad_pixels_before, out_nchannels);
       output += pad_pixels_before * out_strides[d];
+      input += pad_pixels_before * in_strides[d];
     }
-
-    // If the anchor is positive, advance the input pointer
-    if (anchor[d] > 0)
-      input += anchor[d] * in_strides[d];
 
     bool channel_dim_unchanged = in_nchannels == out_nchannels && anchor[channel_dim] == 0;
     if (channel_dim_unchanged) {
@@ -131,6 +133,7 @@ void SliceKernelImplChannelLast(OutputType *output,
       for (int64_t i = 0; i < n; i++)
         output[i] = input[i];
       output += n;
+      input += n;
     } else {
       // Calculate number of channels to pad on the left, right and the number of channels to be
       // copied
@@ -159,15 +162,16 @@ void SliceKernelImplChannelLast(OutputType *output,
     if (pad_pixels_after > 0) {
       PadFill(output, fill_values, pad_pixels_after, out_nchannels);
       output += pad_pixels_after * out_strides[d];
+      input += pad_pixels_after * in_strides[d];
     }
   } else {  // NeedPad = false
     assert(out_strides[d + 1] == 1);
     assert(in_strides[d + 1] == 1);
     for (int64_t i = 0; i < out_shape[d]; i++) {
       auto *out_row = output + i * out_strides[d];
-      auto *in_row = input + (anchor[d] + i) * in_strides[d];
+      auto *in_row = input + i * in_strides[d];
       for (int64_t j = 0; j < out_shape[d + 1]; j++) {
-        Policy::Fill(out_row[j], in_row[anchor[d + 1] + j], mean, inv_stddev);
+        Policy::Fill(out_row[j], in_row[j], mean, inv_stddev);
       }
     }
   }
@@ -204,7 +208,9 @@ void SliceKernelImpl(OutputType *output,
     if (NeedPad) {
       // out of bounds (left side)
       for (; in_idx < 0 && out_idx < out_shape[d]; in_idx++, out_idx++) {
-        output[out_idx] = *fill_values;
+        *output = *fill_values;
+        output += out_strides[d];
+        input  += in_strides[d];
         if (HasChannels && d == channel_dim) {
           fill_values++;
           mean++;
@@ -215,7 +221,9 @@ void SliceKernelImpl(OutputType *output,
 
     // within input bounds
     for (; in_idx < in_shape[d] && out_idx < out_shape[d]; in_idx++, out_idx++) {
-      Policy::Fill(output[out_idx], input[in_idx], mean, inv_stddev);
+      Policy::Fill(*output, *input, mean, inv_stddev);
+      output += out_strides[d];
+      input  += in_strides[d];
       if (HasChannels && d == channel_dim) {
           fill_values++;
           mean++;
@@ -226,7 +234,9 @@ void SliceKernelImpl(OutputType *output,
     if (NeedPad) {
       // out of bounds (right side)
       for (; out_idx < out_shape[d]; in_idx++, out_idx++) {
-        output[out_idx] = *fill_values;
+        *output = *fill_values;
+        output += out_strides[d];
+        input += in_strides[d];
         if (HasChannels && d == channel_dim) {
           fill_values++;
           mean++;
@@ -251,8 +261,8 @@ void SliceKernelImpl(OutputType *output,
                      const float *inv_stddev,
                      int channel_dim,  // negative if no channel dim or already processed
                      std::integral_constant<int, DimsLeft>) {
-  // Special case for last 2 dimensions with channel-last configuration
-  if (DimsLeft == 2 && channel_dim == 1) {
+  // Special case for last 2 dimensions with channel-last configuration and no flip
+  if (false && DimsLeft == 2 && channel_dim == 1 && in_strides[0] == in_shape[1] && in_strides[1] == 1) {
     SliceKernelImplChannelLast<Policy, OutOfBounds, NeedPad, HasChannels>(
         output, input, in_strides, out_strides, anchor, in_shape, out_shape, fill_values, mean,
         inv_stddev, channel_dim);
@@ -263,9 +273,6 @@ void SliceKernelImpl(OutputType *output,
   int in_idx = anchor[d];
   int out_idx = 0;
 
-  if (anchor[d] > 0 && anchor[d] < in_shape[d])
-    input += anchor[d] * in_strides[d];
-
   if (NeedPad) {
     // out of bounds (left side)
     for (; in_idx < 0 && out_idx < out_shape[d]; in_idx++, out_idx++) {
@@ -273,6 +280,7 @@ void SliceKernelImpl(OutputType *output,
           output, input, in_strides + 1, out_strides + 1, anchor + 1, in_shape + 1, out_shape + 1,
           fill_values, mean, inv_stddev, channel_dim - 1, std::integral_constant<int, DimsLeft - 1>());
       output += out_strides[d];
+      input  += in_strides[d];
       if (HasChannels && d == channel_dim) {
         fill_values++;
         mean++;
@@ -287,8 +295,7 @@ void SliceKernelImpl(OutputType *output,
         output, input, in_strides + 1, out_strides + 1, anchor + 1, in_shape + 1, out_shape + 1,
         fill_values, mean, inv_stddev, channel_dim - 1, std::integral_constant<int, DimsLeft - 1>());
     output += out_strides[d];
-    if (!OutOfBounds)
-      input += in_strides[d];
+    input  += in_strides[d];
     if (HasChannels && d == channel_dim) {
       fill_values++;
       mean++;
@@ -303,6 +310,7 @@ void SliceKernelImpl(OutputType *output,
           output, input, in_strides + 1, out_strides + 1, anchor + 1, in_shape + 1, out_shape + 1,
           fill_values, mean, inv_stddev, channel_dim - 1, std::integral_constant<int, DimsLeft - 1>());
       output += out_strides[d];
+      input  += in_strides[d];
       if (HasChannels && d == channel_dim) {
         fill_values++;
         mean++;
@@ -370,6 +378,10 @@ class SliceCPU {
     auto out_strides = GetStrides(out_shape);
     const InputType *in_ptr = in.data;
     OutputType *out_ptr = out.data;
+
+    for (int d = 0; d < Dims; d++) {
+      in_ptr += anchor[d] * in_strides[d];
+    }
 
     // fill values should not be empty. It should be left default if not used
     assert(!slice_args.fill_values.empty());

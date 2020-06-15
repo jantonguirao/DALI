@@ -31,6 +31,16 @@ T Permute(const T& in, const U& permutation) {
   return out;
 }
 
+template <typename U>
+U InversePermutation(const U& permutation) {
+  U inv_perm = permutation;
+  for (int d = 0, n = size(permutation); d < n; d++) {
+    auto perm_d = permutation[d];
+    inv_perm[perm_d] = d;
+  }
+  return inv_perm;
+}
+
 template <typename Shape>
 DALI_HOST_DEV
 void CalcStrides(Shape &strides, const Shape& shape) {

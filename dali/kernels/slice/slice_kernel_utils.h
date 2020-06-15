@@ -32,6 +32,8 @@ struct SliceArgs {
   SmallVector<T, 3> fill_values = {0, };
   SmallVector<float, 3> mean;
   SmallVector<float, 3> inv_stddev;
+  std::array<bool, Dims> flip;
+  std::array<int, Dims> permuted_dims;
   int channel_dim = -1;
 };
 
@@ -80,6 +82,20 @@ inline bool NeedPad(int ndim,
   for (int d = 0; d < ndim && !need_pad; d++)
     need_pad = (anchor[d] < 0) || ((anchor[d] + out_shape[d]) > in_shape[d]);
   return need_pad;
+}
+
+template <typename Permutation>
+inline bool NeedPermute(const Permutation &source_indices) {
+  for (int d = 0, n = size(source_indices); d < n; d++) {
+    if (source_indices[d] != d)
+      return true;
+  }
+  return false;
+}
+
+template <typename Anchor, typename OutShape, typename InStrides>
+void Flip(int ndim, Anchor &anchor, OutShape &shape, InStrides &in_strides) {
+
 }
 
 }  // namespace kernels
