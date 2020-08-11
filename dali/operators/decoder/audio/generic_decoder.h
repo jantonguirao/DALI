@@ -41,7 +41,7 @@ class DLL_PUBLIC GenericAudioDecoder : public TypedAudioDecoderBase<SampleType> 
 
  private:
   AudioMetadata OpenImpl(span<const char> encoded) override;
-
+  AudioMetadata OpenFromFileImpl(const std::string &filepath) override;
   void CloseImpl() override;
 
   struct Impl;

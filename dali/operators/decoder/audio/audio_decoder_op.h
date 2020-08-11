@@ -51,7 +51,6 @@ class AudioDecoderCpu : public Operator<CPUBackend> {
     }
   }
 
-
   inline ~AudioDecoderCpu() override = default;
 
  protected:
