@@ -17,6 +17,7 @@
 
 #include <rapidjson/reader.h>
 #include <rapidjson/document.h>
+#include "dali/core/api_helper.h"
 
 RAPIDJSON_DIAG_PUSH
 #ifdef __GNUC__
@@ -35,9 +36,14 @@ using rapidjson::kParseInsituFlag;
 using rapidjson::kArrayType;
 using rapidjson::kObjectType;
 
+template<size_t N>
+inline int safe_strcmp(const char *str1, const char (&str2)[N]) {
+    return strncmp(str1, str2, N-1);
+}
+
 // taken from https://github.com/Tencent/rapidjson/blob/master/example/lookaheadparser/lookaheadparser.cpp
 
-class LookaheadParserHandler {
+class DLL_PUBLIC LookaheadParserHandler {
  public:
   bool Null() { st_ = kHasNull; v_.SetNull(); return true; }
   bool Bool(bool b) { st_ = kHasBool; v_.SetBool(b); return true; }
@@ -89,22 +95,7 @@ class LookaheadParserHandler {
   static const int parseFlags = kParseDefaultFlags | kParseInsituFlag;
 };
 
-LookaheadParserHandler::LookaheadParserHandler(char* str) :
-    v_(), st_(kInit), r_(), ss_(str) {
-  r_.IterativeParseInit();
-  ParseNext();
-}
-
-void LookaheadParserHandler::ParseNext() {
-  if (r_.HasParseError()) {
-    st_ = kError;
-    return;
-  }
-
-  r_.IterativeParseNext<parseFlags>(ss_, *this);
-}
-
-class LookaheadParser : protected LookaheadParserHandler {
+class DLL_PUBLIC LookaheadParser : protected LookaheadParserHandler {
  public:
   explicit LookaheadParser(char* str) : LookaheadParserHandler(str) {}
 
@@ -130,159 +121,6 @@ class LookaheadParser : protected LookaheadParserHandler {
  protected:
   void SkipOut(int depth);
 };
-
-bool LookaheadParser::EnterObject() {
-  if (st_ != kEnteringObject) {
-    st_  = kError;
-    return false;
-  }
-
-  ParseNext();
-  return true;
-}
-
-bool LookaheadParser::EnterArray() {
-  if (st_ != kEnteringArray) {
-    st_  = kError;
-    return false;
-  }
-
-  ParseNext();
-  return true;
-}
-
-const char* LookaheadParser::NextObjectKey() {
-  if (st_ == kHasKey) {
-    const char* result = v_.GetString();
-    ParseNext();
-    return result;
-  }
-
-  if (st_ != kExitingObject) {
-    st_ = kError;
-    return 0;
-  }
-
-  ParseNext();
-  return 0;
-}
-
-bool LookaheadParser::NextArrayValue() {
-  if (st_ == kExitingArray) {
-    ParseNext();
-    return false;
-  }
-
-  if (st_ == kError || st_ == kExitingObject || st_ == kHasKey) {
-    st_ = kError;
-    return false;
-  }
-
-  return true;
-}
-
-int LookaheadParser::GetInt() {
-  if (st_ != kHasNumber || !v_.IsInt()) {
-    st_ = kError;
-    return 0;
-  }
-
-  int result = v_.GetInt();
-  ParseNext();
-  return result;
-}
-
-double LookaheadParser::GetDouble() {
-  if (st_ != kHasNumber) {
-    st_  = kError;
-    return 0.;
-  }
-
-  double result = v_.GetDouble();
-  ParseNext();
-  return result;
-}
-
-bool LookaheadParser::GetBool() {
-  if (st_ != kHasBool) {
-    st_  = kError;
-    return false;
-  }
-
-  bool result = v_.GetBool();
-  ParseNext();
-  return result;
-}
-
-void LookaheadParser::GetNull() {
-  if (st_ != kHasNull) {
-    st_  = kError;
-    return;
-  }
-
-  ParseNext();
-}
-
-const char* LookaheadParser::GetString() {
-  if (st_ != kHasString) {
-    st_  = kError;
-    return 0;
-  }
-
-  const char* result = v_.GetString();
-  ParseNext();
-  return result;
-}
-
-void LookaheadParser::SkipOut(int depth) {
-  do {
-    if (st_ == kEnteringArray || st_ == kEnteringObject) {
-      ++depth;
-    } else if (st_ == kExitingArray || st_ == kExitingObject) {
-      --depth;
-    } else if (st_ == kError) {
-      return;
-    }
-
-    ParseNext();
-  } while (depth > 0);
-}
-
-void LookaheadParser::SkipValue() {
-  SkipOut(0);
-}
-
-void LookaheadParser::SkipArray() {
-  SkipOut(1);
-}
-
-void LookaheadParser::SkipObject() {
-  SkipOut(1);
-}
-
-Value* LookaheadParser::PeekValue() {
-  if (st_ >= kHasNull && st_ <= kHasKey) {
-    return &v_;
-  }
-
-  return 0;
-}
-
-int LookaheadParser::PeekType() {
-  if (st_ >= kHasNull && st_ <= kHasKey) {
-    return v_.GetType();
-  }
-
-  if (st_ == kEnteringArray) {
-    return kArrayType;
-  }
-
-  if (st_ == kEnteringObject) {
-    return kObjectType;
-  }
-
-  return -1;
-}
 
 }  // namespace detail
 
