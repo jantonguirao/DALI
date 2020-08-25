@@ -51,10 +51,6 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
     return;
   }
 
-  // If we reach here, either downmixing or resampling is needed
-  if (!std::is_same<T, float>::value)
-    DALI_FAIL("Resampling and downmixing is only supported for float");
-
   DALI_ENFORCE(decode_scratch_mem.size() >= meta.length * meta.channels,
                make_string("Decoder scratch memory provided is not big enough. Got :",
                            decode_scratch_mem.size(), ", need: ", meta.length * meta.channels));
@@ -89,12 +85,18 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
   }
 }
 
-template void DecodeAudio<float, int16_t>(TensorView<StorageCPU, float, DynamicDimensions> audio,
-                                          AudioDecoderBase &decoder, const AudioMetadata &meta,
-                                          kernels::signal::resampling::Resampler &resampler_,
-                                          span<int16_t> decode_scratch_mem,
-                                          span<float> resample_scratch_mem,
-                                          float target_sample_rate, bool downmix,
-                                          const char *audio_filepath);
+#define DECLARE_IMPL(OutType, DecoderType) \
+template void DecodeAudio<OutType, DecoderType>(TensorView<StorageCPU, OutType, DynamicDimensions> audio, \
+                                            AudioDecoderBase &decoder, const AudioMetadata &meta, \
+                                            kernels::signal::resampling::Resampler &resampler_, \
+                                            span<DecoderType> decode_scratch_mem, \
+                                            span<float> resample_scratch_mem, \
+                                            float target_sample_rate, bool downmix, \
+                                            const char *audio_filepath)
+
+DECLARE_IMPL(float, int16_t);
+DECLARE_IMPL(int16_t, int16_t);
+
+#undef DECLARE_IMPL
 
 }  // namespace dali
