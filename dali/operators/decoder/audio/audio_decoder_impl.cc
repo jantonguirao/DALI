@@ -30,7 +30,7 @@ TensorShape<> DecodedAudioShape(const AudioMetadata &meta, float target_sample_r
   int64_t len = should_resample ? kernels::signal::resampling::resampled_length(
                                       meta.length, meta.sample_rate, target_sample_rate)
                                 : meta.length;
-  return channels == 1 ? TensorShape<>{len} : TensorShape<>{len, channels};
+  return downmix ? TensorShape<>{len} : TensorShape<>{len, channels};
 }
 
 template <typename T, typename DecoderType = int16_t>
