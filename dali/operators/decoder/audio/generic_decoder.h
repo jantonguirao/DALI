@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 #include "dali/core/format.h"
 #include "dali/core/error_handling.h"

@@ -16,6 +16,7 @@
 #define DALI_OPERATORS_DECODER_AUDIO_AUDIO_DECODER_H_
 
 #include <memory>
+#include <string>
 #include "dali/core/span.h"
 
 namespace dali {

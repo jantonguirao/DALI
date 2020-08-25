@@ -29,7 +29,7 @@ TensorShape<> DecodedAudioShape(const AudioMetadata &meta, float target_sample_r
 template <typename T, typename DecoderType>
 void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecoderBase &decoder,
                  const AudioMetadata &meta, kernels::signal::resampling::Resampler &resampler_,
-                 span<DecoderType> decode_scratch_mem, span<float> downmix_scratch_mem,
+                 span<DecoderType> decode_scratch_mem, span<float> resample_scratch_mem,
                  float target_sample_rate, bool downmix, const char *audio_filepath);
 
 }  // namespace dali
