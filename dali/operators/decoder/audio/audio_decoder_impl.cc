@@ -45,7 +45,7 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
   bool should_downmix = meta.channels > 1 && downmix;
   size_t num_samples = meta.length * meta.channels;
 
-  if (!should_resample && !should_downmix) {
+  if (!should_resample && !should_downmix && std::is_same<T, DecoderType>::value) {
     size_t ret = decoder.Decode(as_raw_span(audio.data, num_samples));
     DALI_ENFORCE(ret == num_samples, make_string("Error decoding audio file ", audio_filepath));
     return;
@@ -54,45 +54,48 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
   DALI_ENFORCE(decode_scratch_mem.size() >= meta.length * meta.channels,
                make_string("Decoder scratch memory provided is not big enough. Got :",
                            decode_scratch_mem.size(), ", need: ", meta.length * meta.channels));
-  if (should_resample)
-    DALI_ENFORCE(resample_scratch_mem.size() >= meta.length,
+
+  const int64_t out_channels = should_downmix ? 1 : meta.channels;
+  if (should_resample) {
+    int64_t req_resample_scratch = meta.length * out_channels;
+    DALI_ENFORCE(resample_scratch_mem.size() >= req_resample_scratch,
                  make_string("Resample scratch memory provided is not big enough. Got :",
-                             resample_scratch_mem.size(), ", need: ", meta.length));
+                             resample_scratch_mem.size(), ", need: ", req_resample_scratch));
+  }
 
   size_t ret = decoder.Decode(as_raw_span(decode_scratch_mem.data(), num_samples));
   DALI_ENFORCE(ret == num_samples, make_string("Error decoding audio file ", audio_filepath));
 
-  int64_t len = std::min<int64_t>(volume(audio.shape), meta.length * meta.channels);
+  const int64_t in_len = meta.length * meta.channels;
   if (should_resample) {
     float *resample_in = resample_scratch_mem.data();
-    assert(resample_scratch_mem.size() == meta.length);
     if (should_downmix) {
+      assert(resample_scratch_mem.size() == meta.length);
       kernels::signal::Downmix(resample_in, decode_scratch_mem.data(), meta.length, meta.channels);
     } else {  // just cast (resampling kernel expects float)
-      for (int64_t ofs = 0; ofs < len; ofs++) {
-        resample_in[ofs] = ConvertSatNorm<T>(decode_scratch_mem[ofs]);
+      assert(resample_scratch_mem.size() == in_len);
+      for (int64_t ofs = 0; ofs < in_len; ofs++) {
+        resample_in[ofs] = ConvertSatNorm<float>(decode_scratch_mem[ofs]);
       }
     }
     resampler_.Resample(audio.data, 0, audio.shape[0], target_sample_rate, resample_in, meta.length,
-                        meta.sample_rate);
+                        meta.sample_rate, out_channels);
   } else if (should_downmix) {  // downmix only
     kernels::signal::Downmix(audio.data, decode_scratch_mem.data(), meta.length, meta.channels);
   } else {
     // convert or copy only
-    for (int64_t ofs = 0; ofs < len; ofs++) {
+    for (int64_t ofs = 0; ofs < in_len; ofs++) {
       audio.data[ofs] = ConvertSatNorm<T>(decode_scratch_mem[ofs]);
     }
   }
 }
 
-#define DECLARE_IMPL(OutType, DecoderType) \
-template void DecodeAudio<OutType, DecoderType>(TensorView<StorageCPU, OutType, DynamicDimensions> audio, \
-                                            AudioDecoderBase &decoder, const AudioMetadata &meta, \
-                                            kernels::signal::resampling::Resampler &resampler_, \
-                                            span<DecoderType> decode_scratch_mem, \
-                                            span<float> resample_scratch_mem, \
-                                            float target_sample_rate, bool downmix, \
-                                            const char *audio_filepath)
+#define DECLARE_IMPL(OutType, DecoderType)                                                  \
+  template void DecodeAudio<OutType, DecoderType>(                                          \
+      TensorView<StorageCPU, OutType, DynamicDimensions> audio, AudioDecoderBase & decoder, \
+      const AudioMetadata &meta, kernels::signal::resampling::Resampler &resampler_,        \
+      span<DecoderType> decode_scratch_mem, span<float> resample_scratch_mem,               \
+      float target_sample_rate, bool downmix, const char *audio_filepath)
 
 DECLARE_IMPL(float, int16_t);
 DECLARE_IMPL(int16_t, int16_t);
