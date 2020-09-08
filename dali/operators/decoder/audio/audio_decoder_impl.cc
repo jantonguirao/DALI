@@ -43,27 +43,27 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
   DALI_ENFORCE(meta.sample_rate > 0, "Invalid sampling rate");
   bool should_resample = target_sample_rate > 0 && meta.sample_rate != target_sample_rate;
   bool should_downmix = meta.channels > 1 && downmix;
-  size_t num_samples = meta.length * meta.channels;
+  int64_t num_samples = meta.length * meta.channels;
 
   if (!should_resample && !should_downmix && std::is_same<T, DecoderType>::value) {
-    size_t ret = decoder.Decode(as_raw_span(audio.data, num_samples));
+    int64_t ret = decoder.Decode(as_raw_span(audio.data, num_samples));
     DALI_ENFORCE(ret == num_samples, make_string("Error decoding audio file ", audio_filepath));
     return;
   }
 
-  DALI_ENFORCE(decode_scratch_mem.size() >= meta.length * meta.channels,
-               make_string("Decoder scratch memory provided is not big enough. Got :",
-                           decode_scratch_mem.size(), ", need: ", meta.length * meta.channels));
+  DALI_ENFORCE(decode_scratch_mem.size() >= num_samples,
+               make_string("Decoder scratch memory provided is not big enough. Got: ",
+                           decode_scratch_mem.size(), ", need: ", num_samples));
 
   const int64_t out_channels = should_downmix ? 1 : meta.channels;
   if (should_resample) {
     int64_t req_resample_scratch = meta.length * out_channels;
     DALI_ENFORCE(resample_scratch_mem.size() >= req_resample_scratch,
-                 make_string("Resample scratch memory provided is not big enough. Got :",
+                 make_string("Resample scratch memory provided is not big enough. Got: ",
                              resample_scratch_mem.size(), ", need: ", req_resample_scratch));
   }
 
-  size_t ret = decoder.Decode(as_raw_span(decode_scratch_mem.data(), num_samples));
+  int64_t ret = decoder.Decode(as_raw_span(decode_scratch_mem.data(), num_samples));
   DALI_ENFORCE(ret == num_samples, make_string("Error decoding audio file ", audio_filepath));
 
   const int64_t in_len = meta.length * meta.channels;
