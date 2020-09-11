@@ -15,8 +15,10 @@
 #ifndef DALI_OPERATORS_GENERIC_LOOKUP_TABLE_H_
 #define DALI_OPERATORS_GENERIC_LOOKUP_TABLE_H_
 
-#define LUT_IN_TYPES (uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t) 
-#define LUT_OUT_TYPES (uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t, float16, float, double, bool) 
+#define LUT_IN_TYPES (uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t)
+#define LUT_OUT_TYPES                                                        \
+  (uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t, \
+  float16, float, double, bool)
 
 #include <limits>
 #include <memory>

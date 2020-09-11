@@ -221,7 +221,8 @@ struct GenericAudioDecoder<SampleType>::Impl {
     sf_info_.format = 0;
     sound_ = sf_open(filepath.c_str(), SFM_READ, &sf_info_);
     if (!sound_) {
-      throw DALIException(make_string("Failed to open encoded data: ", sf_strerror(sound_), ", filepath: ", filepath));
+      throw DALIException(make_string("Failed to open encoded data: ", sf_strerror(sound_),
+                                      ", filepath: ", filepath));
     }
     return GetAudioMetadata(sf_info_);
   }
