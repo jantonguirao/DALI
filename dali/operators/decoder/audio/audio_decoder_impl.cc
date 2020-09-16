@@ -99,6 +99,7 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
 
 DECLARE_IMPL(float, int16_t);
 DECLARE_IMPL(int16_t, int16_t);
+DECLARE_IMPL(int32_t, int16_t);
 
 #undef DECLARE_IMPL
 

@@ -199,7 +199,6 @@ struct GenericAudioDecoder<SampleType>::Impl {
   AudioMetadata OpenImpl(span<const char> encoded) {
     assert(!encoded.empty());
     sf_info_ = {};
-    sf_info_.format = 0;
     mem_stream_ = {encoded.data(), static_cast<int>(encoded.size())};
     SF_VIRTUAL_IO sf_virtual_io = {
             &GetFileLen,
@@ -218,7 +217,6 @@ struct GenericAudioDecoder<SampleType>::Impl {
   AudioMetadata OpenFromFileImpl(const std::string &filepath) {
     DALI_ENFORCE(!filepath.empty(), "filepath is empty");
     sf_info_ = {};
-    sf_info_.format = 0;
     sound_ = sf_open(filepath.c_str(), SFM_READ, &sf_info_);
     if (!sound_) {
       throw DALIException(make_string("Failed to open encoded data: ", sf_strerror(sound_),
