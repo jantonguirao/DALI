@@ -35,7 +35,7 @@ TensorShape<> DecodedAudioShape(const AudioMetadata &meta, float target_sample_r
 
 template <typename T, typename DecoderType = int16_t>
 void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecoderBase &decoder,
-                 const AudioMetadata &meta, kernels::signal::resampling::Resampler &resampler_,
+                 const AudioMetadata &meta, kernels::signal::resampling::Resampler &resampler,
                  span<DecoderType> decode_scratch_mem,
                  span<float> resample_scratch_mem,
                  float target_sample_rate, bool downmix,
@@ -78,8 +78,8 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
         resample_in[ofs] = ConvertSatNorm<float>(decode_scratch_mem[ofs]);
       }
     }
-    resampler_.Resample(audio.data, 0, audio.shape[0], target_sample_rate, resample_in, meta.length,
-                        meta.sample_rate, out_channels);
+    resampler.Resample(audio.data, 0, audio.shape[0], target_sample_rate, resample_in, meta.length,
+                       meta.sample_rate, out_channels);
   } else if (should_downmix) {  // downmix only
     kernels::signal::Downmix(audio.data, decode_scratch_mem.data(), meta.length, meta.channels);
   } else {
@@ -93,7 +93,7 @@ void DecodeAudio(TensorView<StorageCPU, T, DynamicDimensions> audio, AudioDecode
 #define DECLARE_IMPL(OutType, DecoderType)                                                  \
   template void DecodeAudio<OutType, DecoderType>(                                          \
       TensorView<StorageCPU, OutType, DynamicDimensions> audio, AudioDecoderBase & decoder, \
-      const AudioMetadata &meta, kernels::signal::resampling::Resampler &resampler_,        \
+      const AudioMetadata &meta, kernels::signal::resampling::Resampler &resampler,         \
       span<DecoderType> decode_scratch_mem, span<float> resample_scratch_mem,               \
       float target_sample_rate, bool downmix, const char *audio_filepath)
 
