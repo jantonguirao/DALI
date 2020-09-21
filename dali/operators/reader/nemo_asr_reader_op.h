@@ -23,58 +23,53 @@
 #include <vector>
 #include <istream>
 #include <memory>
-
+#include "dali/pipeline/data/views.h"
 #include "dali/operators/reader/reader_op.h"
 #include "dali/operators/reader/loader/nemo_asr_loader.h"
+#include "dali/operators/decoder/audio/generic_decoder.h"
+#include "dali/operators/decoder/audio/audio_decoder_impl.h"
 
 namespace dali {
-class NemoAsrReader : public DataReader<CPUBackend, AsrSample> {
+
+class NemoAsrReader : public DataReader<CPUBackend, NemoAsrEntry> {
  public:
-  explicit NemoAsrReader(const OpSpec& spec):
-      DataReader<CPUBackend, AsrSample>(spec),
-      read_sr_(spec.GetArgument<bool>("read_sample_rate")),
-      read_text_(spec.GetArgument<bool>("read_text")) {
-    loader_ = InitLoader<NemoAsrLoader>(spec);
+  explicit NemoAsrReader(const OpSpec& spec);
+
+ protected:
+  bool CanInferOutputs() const override {
+    return false;  // Let RunImpl allocate the outputs
   }
 
-  void Prefetch() override {
-    DataReader<CPUBackend, AsrSample>::Prefetch();
-    auto &curr_batch = prefetched_batch_queue_[curr_batch_producer_];
-    // Waiting until all the audio samples are ready to be consumed
-    for (auto &sample : curr_batch) {
-      (void) sample->audio();  // waits until the data is ready
-    }
-  }
-
-  void RunImpl(SampleWorkspace &ws) override {
-    const AsrSample& sample = GetSample(ws.data_idx());
-
-    auto &audio = ws.Output<CPUBackend>(0);
-    audio.Copy(sample.audio(), 0);
-
-    int next_out_idx = 1;
-    if (read_sr_) {
-      auto &sample_rate = ws.Output<CPUBackend>(next_out_idx++);
-      sample_rate.Resize({1});
-      sample_rate.set_type(TypeTable::GetTypeInfo(DALI_FLOAT));
-      sample_rate.mutable_data<float>()[0] = sample.audio_meta().sample_rate;
-      sample_rate.SetSourceInfo(sample.audio().GetSourceInfo());
-    }
-
-    if (read_text_) {
-      auto &text = ws.Output<CPUBackend>(next_out_idx++);
-      text.set_type(TypeTable::GetTypeInfo(DALI_UINT8));
-      int64_t text_sz = sample.text().length() + 1;  // +1 for null character
-      text.Resize({text_sz});
-      std::memcpy(text.mutable_data<uint8_t>(), sample.text().c_str(), sample.text().length());
-      text.mutable_data<uint8_t>()[sample.text().length()] = '\0';
-      text.SetSourceInfo(sample.audio().GetSourceInfo());
-    }
-  }
+  void RunImpl(workspace_t<CPUBackend> &ws) override;
 
  private:
+  using DecoderType = int16_t;
+  struct SampleContext {
+    NemoAsrEntry desc;
+    AudioMetadata audio_meta;
+    std::unique_ptr<AudioDecoderBase> decoder;
+  };
+
+  template <typename T>
+  void ReadAudio(const TensorView<StorageCPU, T, DynamicDimensions> &audio,
+                 SampleContext &sample,
+                 Tensor<CPUBackend> &scratch);
+
   bool read_sr_;
   bool read_text_;
+
+  float sample_rate_;
+  float quality_;
+  bool downmix_;
+  DALIDataType dtype_;
+  float max_duration_;
+  bool normalize_text_;
+
+  int num_threads_;
+  ThreadPool thread_pool_;
+  kernels::signal::resampling::Resampler resampler_;
+  std::vector<Tensor<CPUBackend>> scratch_;
+  std::vector<SampleContext> sample_ctx_;
 };
 
 }  // namespace dali

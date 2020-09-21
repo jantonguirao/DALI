@@ -15,8 +15,6 @@
 #include <string>
 #include "dali/core/common.h"
 #include "dali/core/error_handling.h"
-#include "dali/operators/decoder/audio/generic_decoder.h"
-#include "dali/operators/decoder/audio/audio_decoder_impl.h"
 #include "dali/operators/reader/loader/nemo_asr_loader.h"
 #include "dali/operators/reader/loader/utils.h"
 #include "dali/pipeline/data/views.h"
@@ -97,7 +95,7 @@ void NemoAsrLoader::PrepareMetadataImpl() {
     std::ifstream fstream(manifest_filepath);
     DALI_ENFORCE(fstream,
                  make_string("Could not open NEMO ASR manifest file: \"", manifest_filepath, "\""));
-    detail::ParseManifest(entries_, fstream, max_duration_);
+    detail::ParseManifest(entries_, fstream, max_duration_, normalize_text_);
   }
 
   DALI_ENFORCE(Size() > 0, "No files found.");
@@ -120,80 +118,13 @@ void NemoAsrLoader::Reset(bool wrap_to_shard) {
   }
 }
 
-void NemoAsrLoader::PrepareEmpty(AsrSample &sample) {
-  PrepareEmptyTensor(sample.audio_);
-}
-
-void NemoAsrLoader::ReadAudio(Tensor<CPUBackend> &audio,
-                              AudioMetadata &audio_meta,
-                              const NemoAsrEntry &entry,
-                              Tensor<CPUBackend> &scratch) {
-  using DecoderType = int16_t;
-  GenericAudioDecoder<DecoderType> decoder;
-  audio_meta = decoder.OpenFromFile(entry.audio_filepath);
-  assert(audio_meta.channels_interleaved);  // it's always true
-
-  audio.set_type(TypeTable::GetTypeInfo(dtype_));
-  auto shape = DecodedAudioShape(audio_meta, sample_rate_, downmix_);
-  assert(shape.size() > 0);
-  audio.Resize(shape);
-
-  bool should_resample = sample_rate_ > 0 && audio_meta.sample_rate != sample_rate_;
-  bool should_downmix = audio_meta.channels > 1 && downmix_;
-
-  int64_t decode_scratch_sz = 0;
-  int64_t resample_scratch_sz = 0;
-  if (should_resample || should_downmix || dtype_ != DALI_INT16)
-    decode_scratch_sz = audio_meta.length * audio_meta.channels;
-
-  // resample scratch is used to prepare a single or multiple (depending if
-  // downmixing is needed) channel float input, required by the resampling
-  // kernel
-  int64_t out_channels = should_downmix ? 1 : audio_meta.channels;
-  if (should_resample)
-    resample_scratch_sz = audio_meta.length * out_channels;
-
-  int64_t total_scratch_sz =
-      decode_scratch_sz * sizeof(DecoderType) + resample_scratch_sz * sizeof(float);
-  scratch.set_type(TypeTable::GetTypeInfo(DALI_UINT8));
-  scratch.Resize({total_scratch_sz});
-  uint8_t* scratch_mem = scratch.mutable_data<uint8_t>();
-
-  span<DecoderType> decoder_scratch_mem(reinterpret_cast<DecoderType *>(scratch_mem),
-                                        decode_scratch_sz);
-  span<float> resample_scratch_mem(
-        reinterpret_cast<float *>(scratch_mem + decode_scratch_sz * sizeof(DecoderType)),
-        resample_scratch_sz);
-  TYPE_SWITCH(dtype_, type2id, OutType, (float, int16_t), (
-    DecodeAudio(view<OutType>(audio), decoder, audio_meta, resampler_,
-                decoder_scratch_mem, resample_scratch_mem, sample_rate_, downmix_,
-                entry.audio_filepath.c_str());
-  ), DALI_FAIL(make_string("Unsupported type: ", dtype_)));  // NOLINT
-
-  decoder.Close();
-}
-
-void NemoAsrLoader::ReadSample(AsrSample& sample) {
-  auto &entry = entries_[current_index_++];
-
-  // handle wrap-around
-  MoveToNextShard(current_index_);
-
-  // metadata info
+void NemoAsrLoader::PrepareEmpty(NemoAsrEntry &sample) {
   sample = {};
-  DALIMeta meta;
-  meta.SetSourceInfo(entry.audio_filepath);
-  meta.SetSkipSample(false);
-  sample.audio_.SetMeta(meta);
-  sample.text_ = entry.text;
+}
 
-  // Ignoring copy_read_data_, Sharing data is not supported with this loader
-
-  thread_pool_.DoWorkWithID(
-    [this, &sample, &entry](int tid) {
-      ReadAudio(sample.audio_, sample.audio_meta_, entry, scratch_[tid]);
-      sample.audio_ready_promise_.set_value();
-    });
+void NemoAsrLoader::ReadSample(NemoAsrEntry& sample) {
+  sample = entries_[current_index_++];
+  MoveToNextShard(current_index_);  // handle wrap-around
 }
 
 Index NemoAsrLoader::SizeImpl() {

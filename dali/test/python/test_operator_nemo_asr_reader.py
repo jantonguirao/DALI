@@ -104,6 +104,7 @@ def test_decoded_vs_generated(batch_size=3):
     out = pipeline.run()
     for idx in range(batch_size):
       audio_plain = out[0].at(idx)
+
       audio_downmix = out[1].at(idx)
       audio_resampled1 = out[2].at(idx)
       audio_resampled2 = out[3].at(idx)

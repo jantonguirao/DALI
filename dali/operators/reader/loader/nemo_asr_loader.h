@@ -39,37 +39,6 @@ struct NemoAsrEntry {
   std::string text;  // transcription
 };
 
-struct AsrSample {
-  AsrSample() {
-    audio_ready_future_ = audio_ready_promise_.get_future();
-  }
-
-  const Tensor<CPUBackend>& audio() const {
-    audio_ready_future_.wait();
-    return audio_;
-  }
-
-  const std::string& text() const {
-    return text_;
-  }
-
-  const AudioMetadata &audio_meta() const {
-    return audio_meta_;
-  }
-
-  friend class NemoAsrLoader;
-
- private:
-  Tensor<CPUBackend> audio_;
-  std::string text_;
-  AudioMetadata audio_meta_;
-
-  // Audio is decoded and resampled asynchronously.
-  // The promise will be set when the audio data is ready to be consumed
-  std::promise<void> audio_ready_promise_;
-  mutable std::future<void> audio_ready_future_;
-};
-
 namespace detail {
 
 DLL_PUBLIC void ParseManifest(std::vector<NemoAsrEntry> &entries, std::istream &manifest_file,
@@ -78,21 +47,14 @@ DLL_PUBLIC void ParseManifest(std::vector<NemoAsrEntry> &entries, std::istream &
 
 }  // namespace detail
 
-class DLL_PUBLIC NemoAsrLoader : public Loader<CPUBackend, AsrSample> {
+class DLL_PUBLIC NemoAsrLoader : public Loader<CPUBackend, NemoAsrEntry> {
  public:
   explicit inline NemoAsrLoader(const OpSpec &spec)
-      : Loader<CPUBackend, AsrSample>(spec),
+      : Loader<CPUBackend, NemoAsrEntry>(spec),
         manifest_filepaths_(spec.GetRepeatedArgument<std::string>("manifest_filepaths")),
-        shuffle_after_epoch_(spec.GetArgument<bool>("shuffle_after_epoch")),
-        sample_rate_(spec.GetArgument<float>("sample_rate")),
-        quality_(spec.GetArgument<float>("quality")),
-        downmix_(spec.GetArgument<bool>("downmix")),
-        dtype_(spec.GetArgument<DALIDataType>("dtype")),
         max_duration_(spec.GetArgument<float>("max_duration")),
         normalize_text_(spec.GetArgument<bool>("normalize_text")),
-        num_threads_(std::max(1, spec.GetArgument<int>("num_threads"))),
-        thread_pool_(num_threads_, spec.GetArgument<int>("device_id"), false),
-        scratch_(num_threads_) {
+        shuffle_after_epoch_(spec.GetArgument<bool>("shuffle_after_epoch")) {
     DALI_ENFORCE(!manifest_filepaths_.empty(), "``manifest_filepaths`` can not be empty");
     /*
      * Those options are mutually exclusive as `shuffle_after_epoch` will make every shard looks
@@ -109,17 +71,11 @@ class DLL_PUBLIC NemoAsrLoader : public Loader<CPUBackend, AsrSample> {
      */
     if (shuffle_after_epoch_)
       stick_to_shard_ = true;
-
-    double q = quality_;
-    DALI_ENFORCE(q >= 0 && q <= 100, "Resampling quality must be in [0..100] range");
-    // this should give 3 lobes for q = 0, 16 lobes for q = 50 and 64 lobes for q = 100
-    int lobes = std::round(0.007 * q * q - 0.09 * q + 3);
-    resampler_.Initialize(lobes, lobes * 64 + 1);
   }
 
   ~NemoAsrLoader() override = default;
-  void PrepareEmpty(AsrSample &sample) override;
-  void ReadSample(AsrSample& sample) override;
+  void PrepareEmpty(NemoAsrEntry &sample) override;
+  void ReadSample(NemoAsrEntry& sample) override;
 
  protected:
   void PrepareMetadataImpl() override;
@@ -127,29 +83,14 @@ class DLL_PUBLIC NemoAsrLoader : public Loader<CPUBackend, AsrSample> {
   void Reset(bool wrap_to_shard) override;
 
  private:
-  void ReadAudio(Tensor<CPUBackend> &audio,
-                 AudioMetadata &audio_meta,
-                 const NemoAsrEntry &entry,
-                 Tensor<CPUBackend> &scratch);
-
   std::vector<std::string> manifest_filepaths_;
   std::vector<NemoAsrEntry> entries_;
 
+  float max_duration_;
+  bool normalize_text_;
   bool shuffle_after_epoch_;
   Index current_index_ = 0;
   int current_epoch_ = 0;
-
-  float sample_rate_;
-  float quality_;
-  bool downmix_;
-  DALIDataType dtype_;
-  float max_duration_;
-  bool normalize_text_;
-
-  int num_threads_;
-  ThreadPool thread_pool_;
-  kernels::signal::resampling::Resampler resampler_;
-  std::vector<Tensor<CPUBackend>> scratch_;
 };
 
 }  // namespace dali
