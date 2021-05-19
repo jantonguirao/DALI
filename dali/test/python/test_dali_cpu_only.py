@@ -33,7 +33,7 @@ import sys
 
 data_root = get_dali_extra_path()
 images_dir = os.path.join(data_root, 'db', 'single', 'jpeg')
-audio_dir = os.path.join(data_root, 'db', 'audio')
+audio_dir = os.path.join(data_root, 'db', 'audio', 'wav')
 caffe_dir = os.path.join(data_root, 'db', 'lmdb')
 caffe2_dir = os.path.join(data_root, 'db', 'c2lmdb')
 recordio_dir = os.path.join(data_root, 'db', 'recordio')
