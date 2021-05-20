@@ -19,7 +19,7 @@ import nvidia.dali.tfrecord as tfrec
 import nvidia.dali.math as dmath
 import nvidia.dali.plugin.pytorch as pytorch
 from nvidia.dali.plugin.numba.fn.experimental import numba_function
-from test_utils import get_dali_extra_path, check_batch, RandomlyShapedDataIterator, dali_type, module_functions
+from test_utils import get_dali_extra_path, get_files, check_batch, RandomlyShapedDataIterator, dali_type, module_functions
 from segmentation_test_utils import make_batch_select_masks
 from PIL import Image, ImageEnhance
 
@@ -33,7 +33,7 @@ import sys
 
 data_root = get_dali_extra_path()
 images_dir = os.path.join(data_root, 'db', 'single', 'jpeg')
-audio_dir = os.path.join(data_root, 'db', 'audio', 'wav')
+audio_files = get_files(os.path.join('db', 'audio', 'wav'), 'wav')
 caffe_dir = os.path.join(data_root, 'db', 'lmdb')
 caffe2_dir = os.path.join(data_root, 'db', 'c2lmdb')
 recordio_dir = os.path.join(data_root, 'db', 'recordio')
@@ -313,7 +313,7 @@ def test_transpose_cpu():
 
 def test_audio_decoder_cpu():
     pipe = Pipeline(batch_size=batch_size, num_threads=4, device_id=None)
-    input, _ = fn.readers.file(file_root=audio_dir, shard_id=0, num_shards=1)
+    input, _ = fn.readers.file(files=audio_files, shard_id=0, num_shards=1)
     decoded, _ = fn.decoders.audio(input)
     pipe.set_outputs(decoded)
     pipe.build()
