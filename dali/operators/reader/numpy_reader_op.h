@@ -24,7 +24,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <set>
 
 #include "dali/operators/generic/slice/slice_attr.h"
 #include "dali/operators/generic/slice/out_of_bounds_policy.h"
@@ -71,10 +70,10 @@ class NumpyReader : public DataReader<Backend, Target> {
     if (has_roi_args)
       rois_.resize(batch_size);
 
-    need_copy_.clear();
     need_transpose_.clear();
+    need_transpose_.resize(batch_size);
     need_slice_.clear();
-    need_slice_perm_.clear();
+    need_slice_.resize(batch_size);
     for (int i = 0; i < batch_size; i++) {
       const auto& file_i = GetSample(i);
       const auto& file_sh = file_i.get_shape();
@@ -125,6 +124,8 @@ class NumpyReader : public DataReader<Backend, Target> {
         // original layout
         auto& roi = rois_[i];
         if (is_transposed) {
+          roi.anchor.resize(ndim);
+          roi.shape.resize(ndim);
           for (int d = 0; d < ndim; d++) {
             roi.anchor[d] = tmp_roi.anchor[ndim - 1 - d];
             roi.shape[d] = tmp_roi.shape[ndim - 1 - d];
@@ -134,14 +135,8 @@ class NumpyReader : public DataReader<Backend, Target> {
         }
       }
 
-      if (need_slice && is_transposed)
-        need_slice_perm_.insert(i);
-      else if (is_transposed)
-        need_transpose_.insert(i);
-      else if (need_slice)
-        need_slice_.insert(i);
-      else
-        need_copy_.insert(i);
+      need_slice_[i] = need_slice;
+      need_transpose_[i] = is_transposed;
     }
     output_desc.resize(1);
     output_desc[0].shape = std::move(sh);
@@ -154,10 +149,8 @@ class NumpyReader : public DataReader<Backend, Target> {
   OutOfBoundsPolicy out_of_bounds_policy_ = OutOfBoundsPolicy::Error;
   float fill_value_ = 0;
 
-  std::set<int> need_transpose_;
-  std::set<int> need_slice_;
-  std::set<int> need_slice_perm_;
-  std::set<int> need_copy_;
+  std::vector<bool> need_transpose_;
+  std::vector<bool> need_slice_;
 };
 
 class NumpyReaderCPU : public NumpyReader<CPUBackend, NumpyFileWrapper> {
