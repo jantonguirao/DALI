@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -122,7 +122,7 @@ def check_operator_spectrogram_vs_python(device, batch_size, input_shape,
                             window_length=window_length, window_step=window_step),
         SpectrogramPythonPipeline(device, batch_size, iter(eii2), window=None, nfft=nfft,
                                   window_length=window_length, window_step=window_step),
-        batch_size=batch_size, N_iterations=5, eps=1e-04)
+        batch_size=batch_size, N_iterations=3, eps=1e-04)
 
 def test_operator_spectrogram_vs_python():
     for device in ['cpu']:
@@ -154,7 +154,7 @@ def check_operator_spectrogram_vs_python_wave_1d(device, batch_size, input_lengt
         SpectrogramPythonPipeline(device, batch_size, iter(data2),
                                   nfft=nfft, window_length=window_length, window_step=window_step,
                                   window=window),
-        batch_size=batch_size, N_iterations=5, eps=1e-04)
+        batch_size=batch_size, N_iterations=3, eps=1e-04)
 
 def test_operator_spectrogram_vs_python_wave():
     for device in ['cpu', 'gpu']:
@@ -223,7 +223,7 @@ def check_operator_decoder_and_spectrogram_vs_python(device, batch_size, nfft, w
                                  nfft=nfft, window_length=window_length, window_step=window_step, layout=layout),
         AudioSpectrogramPythonPipeline(batch_size, nfft=nfft,
                                        window_length=window_length, window_step=window_step, layout=layout),
-        batch_size=batch_size, N_iterations=5, eps=1e-04)
+        batch_size=batch_size, N_iterations=3, eps=1e-04)
 
 
 def test_operator_decoder_and_spectrogram():
@@ -239,4 +239,3 @@ def test_operator_decoder_and_spectrogram():
                                                                 ]:
                     yield check_operator_decoder_and_spectrogram_vs_python, device, batch_size, \
                             nfft, window_length, window_step, layout
-
