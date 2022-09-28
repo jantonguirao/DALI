@@ -28,6 +28,7 @@
 #include "dali/util/file.h"
 #include "dali/util/numpy.h"
 #include "dali/imgcodec/decoders/opencv_fallback.h"
+#include "dali/imgcodec/decoders/nvjpeg/nvjpeg.h"
 
 namespace dali {
 namespace imgcodec {

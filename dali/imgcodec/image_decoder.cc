@@ -359,10 +359,10 @@ void ImageDecoder::DecoderWorker::process_batch(std::unique_ptr<ScheduledWork> w
         for (int sub_idx : indices) {
           DecodeResult r = future.get_one(sub_idx);
           if (r.success) {
-            work->results.set(work->indices[sub_idx], r);
             if (!decode_to_gpu && !work->gpu_outputs.empty()) {
               copy(work->gpu_outputs[sub_idx], work->cpu_outputs[sub_idx], work->ctx.stream);
             }
+            work->results.set(work->indices[sub_idx], r);
           } else {
             if (!fallback_work)
               fallback_work = owner_->new_work(work->ctx, work->results, work->params);
@@ -563,8 +563,7 @@ FutureDecodeResults ImageDecoder::ScheduleDecode(DecodeContext ctx,
                                                  ImageSource *in,
                                                  DecodeParams opts,
                                                  const ROI &roi) {
-  auto rois = make_span(&roi, roi.use_roi() ? 1 : 0);
-  return ScheduleDecode(ctx, make_span(&out, 1), make_span(&in, 1), opts, rois);
+  return ScheduleDecode(ctx, make_span(&out, 1), make_span(&in, 1), opts, make_span(&roi, 1));
 }
 
 FutureDecodeResults ImageDecoder::ScheduleDecode(DecodeContext ctx,
@@ -572,8 +571,7 @@ FutureDecodeResults ImageDecoder::ScheduleDecode(DecodeContext ctx,
                                                  ImageSource *in,
                                                  DecodeParams opts,
                                                  const ROI &roi) {
-  auto rois = make_span(&roi, roi.use_roi() ? 1 : 0);
-  return ScheduleDecode(ctx, make_span(&out, 1), make_span(&in, 1), opts, rois);
+  return ScheduleDecode(ctx, make_span(&out, 1), make_span(&in, 1), opts, make_span(&roi, 1));
 }
 
 FutureDecodeResults ImageDecoder::ScheduleDecode(DecodeContext ctx,
