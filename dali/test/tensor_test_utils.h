@@ -116,6 +116,7 @@ void Check(const TensorView<StorageBackend, T1, dim1> &tv1,
     if (!eq(tv1.data[i], tv2.data[i])) {
       if (errors++ < max_errors) {
         EXPECT_PRED2(eq, tv1.data[i], tv2.data[i]) << "Failed at index " << i << ", pos = " << pos;
+        throw std::runtime_error("");  // TODO(janton): Remove this
       }
     }
 

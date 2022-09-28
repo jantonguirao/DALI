@@ -27,6 +27,7 @@
 #include "dali/imgcodec/image_decoder_interfaces.h"
 #include "dali/imgcodec/image_format.h"
 #include "dali/imgcodec/util/convert.h"
+#include "dali/imgcodec/util/output_shape.h"
 #include "dali/kernels/slice/slice_cpu.h"
 #include "dali/pipeline/data/tensor.h"
 #include "dali/pipeline/data/views.h"
@@ -99,6 +100,8 @@ void AssertSimilar(const TensorView<StorageCPU, const OutputType> &img,
   }
   mean_square_error = sqrt(mean_square_error / size);
   EXPECT_LT(mean_square_error, 0.04);
+  if (mean_square_error >= 0.04)  // TODO(janton): Remove this
+    DALI_FAIL("");
 }
 
 
@@ -253,11 +256,8 @@ class DecoderTestBase : public ::testing::Test {
     EXPECT_TRUE(Decoder()->CanDecode(ctx, src, opts));
 
     ImageInfo info = Parser()->GetInfo(src);
-    auto shape = AdjustToRoi(info.shape, roi);
-
-    // Number of channels can be different than input's due to color conversion
-    // TODO(skarpinski) Don't assume channel-last layout here
-    *(shape.end() - 1) = NumberOfChannels(opts.format, *(info.shape.end() - 1));
+    TensorShape<> shape;
+    OutputShape(shape, info, opts, roi);
 
     output_.reshape({{shape}});
 
@@ -274,8 +274,9 @@ class DecoderTestBase : public ::testing::Test {
       ctx.stream = stream_lease;
       auto decode_result = Decoder()->Decode(ctx, view, src, opts, roi);
       EXPECT_TRUE(decode_result.success);
+      auto out_tv = output_.cpu(ctx.stream)[0];
       CUDA_CALL(cudaStreamSynchronize(ctx.stream));
-      return output_.cpu()[0];
+      return out_tv;
     }
   }
 
@@ -295,7 +296,7 @@ class DecoderTestBase : public ::testing::Test {
       EXPECT_TRUE(Parser()->CanParse(in[i]));
       EXPECT_TRUE(Decoder()->CanDecode(ctx, in[i], opts));
       ImageInfo info = Parser()->GetInfo(in[i]);
-      shape[i] = AdjustToRoi(info.shape, rois.empty() ? ROI{} : rois[i]);
+      OutputShape(shape[i], info, opts, rois.empty() ? ROI() : rois[i]);
     }
 
     output_.reshape(TensorListShape{shape});
@@ -319,8 +320,9 @@ class DecoderTestBase : public ::testing::Test {
       auto res = Decoder()->Decode(ctx, make_span(view), in, opts, rois);
       for (auto decode_result : res)
         EXPECT_TRUE(decode_result.success);
-      CUDA_CALL(cudaStreamSynchronize(stream));
-      return output_.cpu();
+      auto out_tlv = output_.cpu(ctx.stream);
+      CUDA_CALL(cudaStreamSynchronize(ctx.stream));
+      return out_tlv;
     }
   }
 

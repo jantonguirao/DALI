@@ -42,8 +42,8 @@ DecodeResult LibJpegTurboDecoderInstance::DecodeImplTask(int thread_idx,
     flags.color_space = out_type;
   }
 
-  flags.components = info.shape[2];
   target_shape[2] = NumberOfChannels(out_type);
+  flags.components = target_shape[2];
 
   if (use_fast_idct_) {
     flags.dct_method = JDCT_FASTEST;
@@ -74,6 +74,7 @@ DecodeResult LibJpegTurboDecoderInstance::DecodeImplTask(int thread_idx,
     TensorLayout layout = "HWC";
     Convert(out, layout, out_type, in, layout, flags.color_space, {}, {});
   }
+
   return res;
 }
 
