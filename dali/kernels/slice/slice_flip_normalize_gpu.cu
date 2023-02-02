@@ -18,6 +18,7 @@
 #include "dali/kernels/common/utils.h"
 #include "dali/kernels/slice/slice_flip_normalize_gpu.h"
 #include "dali/kernels/slice/slice_flip_normalize_gpu_impl.cuh"
+#include "dali/core/nvtx.h"
 
 namespace dali {
 namespace kernels {
@@ -64,6 +65,8 @@ template <typename Out, typename In, int spatial_ndim, int channel_dim>
 KernelRequirements SliceFlipNormalizeGPU<Out, In, spatial_ndim, channel_dim>::Setup(
     KernelContext &ctx, const TensorListShape<ndim> &sh, const Args &args) {
   (void) ctx;
+  DomainTimeRange tr("SliceFlipNormalizeGPU::Setup", DomainTimeRange::kCyan);
+
   int nsamples = sh.num_samples();
   if (nsamples != static_cast<int>(args.sample_args.size()))
     throw std::invalid_argument("Invalid number of samples in kernel args");
@@ -95,6 +98,7 @@ template <typename Out, typename In, int spatial_ndim, int channel_dim>
 std::tuple<float *, float *, Out *>
 SliceFlipNormalizeGPU<Out, In, spatial_ndim, channel_dim>::SetupParams(KernelContext &ctx,
                                                                        const Args &args) {
+  DomainTimeRange tr("SetupParams", DomainTimeRange::kOrange);
   int num_samples = args.sample_args.size();
   float *norm_add_cpu = ctx.scratchpad->AllocatePinned<float>(num_samples * nchannels_);
   float *norm_mul_cpu = ctx.scratchpad->AllocatePinned<float>(num_samples * nchannels_);
@@ -134,15 +138,23 @@ template <typename Out, typename In, int spatial_ndim, int channel_dim>
 void SliceFlipNormalizeGPU<Out, In, spatial_ndim, channel_dim>::Run(
     KernelContext &ctx, const OutListGPU<Out, ndim> &out, const InListGPU<In, ndim> &in,
     const Args &args) {
+
+  DomainTimeRange tr("SliceFlipNormalizeGPU::Run", DomainTimeRange::kCyan);
+
   using Tile = kernels::BlockDesc<spatial_ndim>;
   using Sample = SampleDesc<Out, In, spatial_ndim>;
   int nsamples = in.num_samples();
 
-  Sample *samples_cpu = ctx.scratchpad->AllocatePinned<Sample>(nsamples);
+  Sample *samples_cpu;
+  {
+    DomainTimeRange tr("AllocatePinned", DomainTimeRange::kOrange);
+    samples_cpu = ctx.scratchpad->AllocatePinned<Sample>(nsamples);
+  }
   auto [norm_add_gpu, norm_mul_gpu, fill_values_gpu] = SetupParams(ctx, args);
 
   bool need_pad = out_nchannels_ != nchannels_;
   for (int i = 0; i < nsamples; i++) {
+    DomainTimeRange tr(make_string("prep sample ", i), DomainTimeRange::kOrange);
     auto &sample_args = args.sample_args[i];
     auto &sample = samples_cpu[i];
 
@@ -193,19 +205,32 @@ void SliceFlipNormalizeGPU<Out, In, spatial_ndim, channel_dim>::Run(
     sample.fill_values = fill_values_gpu + i * out_nchannels_;
   }
 
-  block_setup_.SetDefaultBlockSize({64, 32});
-  block_setup_.SetBlockDim(dim3(32, 16, 1));
+{
+  DomainTimeRange tr("SetupBlocks", DomainTimeRange::kOrange);
+  block_setup_.SetDefaultBlockSize({64, 64});
+  block_setup_.SetBlockDim(dim3(32, 32, 1));
   block_setup_.SetupBlocks(out_shape_orig_, true);
+}
   auto tiles_cpu = block_setup_.Blocks();
   auto grid_dim = block_setup_.GridDim();
   auto block_dim = block_setup_.BlockDim();
 
+  DALI_WARN_ONCE(make_string("block_setup_.Blocks() -> ", tiles_cpu.size()));
+  DALI_WARN_ONCE(make_string("ToContiguousGPU -> ", sizeof(Tile) * tiles_cpu.size(), " + ",
+                             sizeof(Sample) * nsamples, " bytes"));
+
   Sample *samples_gpu = nullptr;
   Tile *tiles_gpu = nullptr;
+  
+  {
+  DomainTimeRange tr("ToContiguousGPU", DomainTimeRange::kOrange);
   std::tie(samples_gpu, tiles_gpu) =
       ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, make_span(samples_cpu, nsamples), tiles_cpu);
+  }
 
   if (spatial_ndim == 2) {
+    DomainTimeRange tr("kernel launch", DomainTimeRange::kOrange);
+
     if (need_pad) {
       SliceNormalizeKernel_2D<Out, In>
           <<<grid_dim, block_dim, 0, ctx.gpu.stream>>>(samples_gpu, tiles_gpu);
