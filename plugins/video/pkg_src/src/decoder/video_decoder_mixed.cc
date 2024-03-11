@@ -14,6 +14,8 @@
 
 #include "decoder/video_decoder_mixed.h"
 #include "dali/core/tensor_shape.h"
+#include "VideoCodecSDKUtils/helper_classes/Utils/ColorSpace.h"
+#include "VideoCodecSDKUtils/helper_classes/Utils/NvCodecUtils.h"
 
 namespace dali_video {
 
@@ -55,8 +57,10 @@ bool VideoDecoderMixed::SetupImpl(
     sample.data_provider_ = std::make_unique<MemoryVideoFile>(input.raw_tensor(i), input[i].shape().num_elements());
     sample.demuxer_ = std::make_unique<FFmpegDemuxer>(sample.data_provider_.get());
     sample.current_packet_ = std::make_unique<PacketData>();
-    std::cout << "Sample #" << i << " {10x" << sample.demuxer_->GetHeight() << "x" << sample.demuxer_->GetWidth() << "x" << 3 << "}\n";
-    sh.set_tensor_shape(i, dali::TensorShape<>(10, sample.demuxer_->GetHeight(), sample.demuxer_->GetWidth(), 3));
+    
+    std::cout << "Sample #" << i << " {50 x " << sample.demuxer_->GetHeight() << " x " << sample.demuxer_->GetWidth() << " x " << 4 << "}\n";
+    
+    sh.set_tensor_shape(i, dali::TensorShape<>(50, sample.demuxer_->GetHeight(), sample.demuxer_->GetWidth(), 4));
   }
   output_desc.resize(1);
   output_desc[0].shape = sh;
@@ -95,6 +99,10 @@ void VideoDecoderMixed::Run(dali::Workspace &ws) {
   cuCtxPopCurrent(nullptr);
 
   cuCtxPushCurrent(cuContext);
+
+  auto output_sample = output[s];
+
+  uint8_t *output_data = output_sample.template mutable_data<uint8_t>();
   
   for (int i = 0; i < batch_size; i++) {
     auto& sample = samples_[i];
@@ -102,35 +110,51 @@ void VideoDecoderMixed::Run(dali::Workspace &ws) {
         cuStream, cuContext, true, FFmpeg2NvCodecId(sample.demuxer_->GetVideoCodec()), false,
         false /*_enableasyncallocations*/, false);
 
+    std::cout << sample.decoder_->GetVideoInfo() << std::endl;
 
-    uint8_t* pVideo = NULL;
-    int nVideoBytes = 0;
-    while (sample.demuxer_->Demux(&pVideo, &nVideoBytes)) {
-      if (nVideoBytes) {
-        auto vecTupFrame = sample.decoder_->Decode(pVideo, nVideoBytes);
-      }
-    }
+
+    uint8_t *pVideo = NULL, *pFrame = nullptr;
+    int nVideoBytes = 0, nFrameReturned = 0, nFrame = 0;
+
+    int num_frames = 0;
+
+     do {
+        sample.demuxer_->Demux(&pVideo, &nVideoBytes);
+        nFrameReturned = sample.decoder_->Decode(pVideo, nVideoBytes);
+
+        for (int i = 0; i < nFrameReturned; i++) {
+          pFrame = sample.decoder_->GetFrame();
+          std::cout << "Frame " << nFrame++ << " decoded in the operator" << std::endl;
+
+          uint8_t *dpFrame = output_data + num_frames * sample.demuxer_->GetHeight() * sample.demuxer_->GetWidth() * 4;
+          int nWidth = sample.decoder_->GetWidth();
+          int nPitch = nWidth * 4;
+          int iMatrix = sample.decoder_->GetVideoFormatInfo().video_signal_description.matrix_coefficients;
+
+          if (sample.decoder_->GetBitDepth() == 8) {
+            if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
+              std::cout << "YUV444" << std::endl;
+              YUV444ToColor32<RGBA32>(pFrame, sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+            } else {
+              std::cout << "YUV420" << std::endl;
+              Nv12ToColor32<RGBA32>(pFrame, sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+            }
+          } else {
+            if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
+              std::cout << "YUV444P16" << std::endl;
+              YUV444P16ToColor32<RGBA32>(pFrame, 2 * sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+            } else {
+              std::cout << "YUV420P16" << std::endl;
+              P016ToColor32<RGBA32>(pFrame, 2 * sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+            }
+          }
+
+          ++num_frames;
+        }
+    } while (nVideoBytes);
+  }
 
   cuCtxPopCurrent(&cuContext);
-
-  // uint8_t* data = nullptr;
-  // int data_size = 0;
-
-  // data_provider_ = std::make_unique<HostMemDataProvider>(data, data_size);
-  // demuxer_ = std::make_unique<FFmpegDemuxer>(data_provider_.get());
-  // current_packet_ = std::make_unique<PacketData>();
-
-  // int nVideoBytes = 0, nFrameReturned = 0, nFrame = 0;
-  // uint8_t* pVideo = NULL, * pFrame;
-  // memset(current_packet_.get(), 0, sizeof(PacketData));
-
-  // while (demuxer_->Demux(&pVideo, &nVideoBytes)) {
-  //   if (nVideoBytes) {
-  //     current_packet_->bsl_data = (uintptr_t)pVideo;
-  //     current_packet_->bsl = nVideoBytes;
-  //   }
-  // }
-  }
 }
 
 
