@@ -19,7 +19,9 @@
 #include "dali/core/common.h"
 #include "dali/core/cuda_utils.h"
 #include "dali/core/device_guard.h"
+#include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
+#include "pyerrors.h"  // NOLINT(build/include)
 #if SHM_WRAPPER_ENABLED
 #include "dali/core/os/shared_mem.h"
 #endif
@@ -34,6 +36,7 @@
 #include "dali/pipeline/data/tensor_list.h"
 #include "dali/pipeline/init.h"
 #include "dali/pipeline/operator/eager_operator.h"
+#include "dali/pipeline/operator/error_reporting.h"
 #include "dali/pipeline/operator/op_schema.h"
 #include "dali/pipeline/operator/op_spec.h"
 #include "dali/pipeline/operator/operator.h"
@@ -1827,13 +1830,18 @@ PYBIND11_MODULE(backend_impl, m) {
         })
     .def("name",
         [](OpNode* node) {
-          return node->spec.name();
+          return node->spec.SchemaName();
         });
 
   py::class_<ExternalContextCheckpoint>(m, "ExternalContextCheckpoint")
     .def(py::init<>())
-    .def_readwrite("epoch_idx", &ExternalContextCheckpoint::epoch_idx)
-    .def_readwrite("iter", &ExternalContextCheckpoint::iter);
+    .def_property("pipeline_data",
+        [](const ExternalContextCheckpoint &self) {
+          return py::bytes(self.pipeline_data);
+        },
+        [](ExternalContextCheckpoint &self, const std::string &new_data) {
+          self.pipeline_data = new_data;
+        });
 
   // Pipeline class
   py::class_<Pipeline, PyPipeline>(m, "Pipeline")
@@ -2154,6 +2162,8 @@ PYBIND11_MODULE(backend_impl, m) {
   m.def("TryGetSchema", &TryGetSchema, py::return_value_policy::reference);
 
   py::class_<OpSchema>(m, "OpSchema")
+    .def("OperatorName", &OpSchema::OperatorName)
+    .def("ModulePath", &OpSchema::ModulePath)
     .def("Dox", &OpSchema::Dox)
     .def("CanUseAutoInputDox", &OpSchema::CanUseAutoInputDox)
     .def("AppendKwargsSection", &OpSchema::AppendKwargsSection)
@@ -2229,6 +2239,28 @@ PYBIND11_MODULE(backend_impl, m) {
   types_m.attr("NFCHW") = "FCHW";
   types_m.attr("SAME") = "";
 
+  // We can register exception translator and translate directly into Python error, without
+  // tying DALI internals into using the py::type_error
+  py::register_exception_translator([](std::exception_ptr p) {
+    try {
+      if (p)
+        std::rethrow_exception(p);
+    } catch (const DaliRuntimeError &e) {
+      PyErr_SetString(PyExc_RuntimeError, e.what());
+    } catch (const DaliIndexError &e) {
+      PyErr_SetString(PyExc_IndexError, e.what());
+    } catch (const DaliTypeError &e) {
+      PyErr_SetString(PyExc_TypeError, e.what());
+    } catch (const DaliValueError &e) {
+      PyErr_SetString(PyExc_ValueError, e.what());
+    } catch (const DaliStopIteration &e) {
+      PyErr_SetString(PyExc_StopIteration, e.what());
+    } catch (const DaliError &e) {
+      // Translate top-level errors to RuntimeError.
+      PyErr_SetString(PyExc_RuntimeError, e.what());
+    }
+  });
+
 #ifdef DALI_BUILD_PROTO3
   // TFRecord
   py::module tfrecord_m = m.def_submodule("tfrecord");
@@ -2237,7 +2269,8 @@ PYBIND11_MODULE(backend_impl, m) {
   tfrecord_m.attr("string") = static_cast<int>(TFFeatureType::string);
   tfrecord_m.attr("float32") = static_cast<int>(TFFeatureType::float32);
 
-  py::class_<TFFeature>(tfrecord_m, "Feature");
+  py::class_<TFFeature>(tfrecord_m, "Feature")
+    .def(py::init<const TFFeature&>());
 
   tfrecord_m.def("FixedLenFeature",
       [](vector<Index> converted_shape, int type, py::object default_value) {

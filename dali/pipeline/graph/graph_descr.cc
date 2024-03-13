@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// Copyright (c) 2017-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include "dali/core/error_handling.h"
 #include "dali/pipeline/graph/op_graph.h"
 
+#include "dali/pipeline/operator/error_reporting.h"
 #include "dali/pipeline/operator/op_schema.h"
 
 #include "dali/pipeline/operator/builtin/make_contiguous.h"
@@ -49,22 +50,22 @@ bool AllOutputsGPU(const OpSpec &spec) {
 
 // TODO(klecki): Graph creation is not a place to check OpSpec?
 void CheckOpConstraints(const OpSpec &spec) {
-  const OpSchema &schema = SchemaRegistry::GetSchema(spec.name());
+  const OpSchema &schema = SchemaRegistry::GetSchema(spec.SchemaName());
 
   const int additional_outputs = schema.CalculateAdditionalOutputs(spec);
 
   DALI_ENFORCE(schema.SupportsInPlace(spec) || !spec.GetArgument<bool>("inplace"),
-      "Op '" + spec.name() + "' does not support in-place execution.");
+      "Op '" + spec.SchemaName() + "' does not support in-place execution.");
   DALI_ENFORCE(spec.NumRegularInput() <= schema.MaxNumInput(),
-      "Operator '" + spec.name() +
+      "Operator '" + spec.SchemaName() +
       "' supports a maximum of " + std::to_string(schema.MaxNumInput()) + " inputs, "
       "but was passed " + std::to_string(spec.NumRegularInput()) + ".");
   DALI_ENFORCE(spec.NumRegularInput() >= schema.MinNumInput(),
-      "Operator '" + spec.name() +
+      "Operator '" + spec.SchemaName() +
       "' supports a minimum of " + std::to_string(schema.MinNumInput()) + " inputs, "
       "but was passed " + std::to_string(spec.NumRegularInput()) + ".");
   DALI_ENFORCE(spec.NumOutput() == schema.CalculateOutputs(spec) + additional_outputs,
-      "Operator '" + spec.name() + "' supports "
+      "Operator '" + spec.SchemaName() + "' supports "
       + std::to_string(schema.CalculateOutputs(spec) + additional_outputs)
       + " outputs, but was passed " + std::to_string(spec.NumOutput()) + ".");
 }
@@ -206,30 +207,17 @@ void OpGraph::InstantiateOperators() {
 
   for (auto op_type : order) {
     for (auto op_id : op_partitions_[static_cast<int>(op_type)]) {
+      std::exception_ptr eptr;
       try {
         op_nodes_[op_id].InstantiateOperator();
-      } catch (std::exception &e) {
-        bool use_instance_name = false;
-        for (const auto& other_node : op_nodes_) {
-          if (op_id != other_node.id && op_nodes_[op_id].spec.name() == other_node.spec.name()) {
-            use_instance_name = true;
-            break;
-          }
-        }
-        if (use_instance_name) {
-          throw std::runtime_error(make_string(
-              "Critical error when building pipeline:\nError when constructing operator: ",
-              op_nodes_[op_id].spec.name(), ", instance name: \"", op_nodes_[op_id].instance_name,
-              "\", encountered:\n", e.what(), "\nCurrent pipeline object is no longer valid."));
-        } else {
-          throw std::runtime_error(make_string(
-              "Critical error when building pipeline:\nError when constructing operator: ",
-              op_nodes_[op_id].spec.name(), " encountered:\n", e.what(),
-              "\nCurrent pipeline object is no longer valid."));
-        }
       } catch (...) {
-        throw std::runtime_error("Unknown critical error when building pipeline.");
+        eptr = std::current_exception();
       }
+
+      PropagateError({eptr,
+                      "Critical error when building pipeline:\n" +
+                          GetErrorContextMessage(op_nodes_[op_id].spec),
+                      "\nCurrent pipeline object is no longer valid."});
     }
   }
 }
@@ -394,11 +382,11 @@ void OpGraph::RemoveOp(OpNodeId id) {
   OpNode &target = this->Node(id);
 
   // If the node has any children, we cannot remove it
-  DALI_ENFORCE(target.children.empty(), "Node '" + target.spec.name() +
+  DALI_ENFORCE(target.children.empty(), "Node '" + target.spec.SchemaName() +
       "' has " + std::to_string(target.children.size()) +
       ". Cannot remove");
   for (auto t : target.children_tensors) {
-    DALI_ENFORCE(tensor_nodes_[t].consumers.empty(), "Node '" + target.spec.name() +
+    DALI_ENFORCE(tensor_nodes_[t].consumers.empty(), "Node '" + target.spec.SchemaName() +
       "' produces a tensor that has " + std::to_string(tensor_nodes_[t].consumers.size()) +
       " consumers. Cannot remove");
   }

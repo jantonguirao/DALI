@@ -106,6 +106,22 @@ inline int InferBatchSizeFromInput(const Workspace &ws, int stage_batch_size) {
 }
 
 template <typename WorkspacePolicy, typename QueuePolicy>
+void Executor<WorkspacePolicy, QueuePolicy>::HandleError(const OpNode &op_node) {
+  HandleError(GetErrorContextMessage(op_node.spec));
+}
+
+template <typename WorkspacePolicy, typename QueuePolicy>
+void Executor<WorkspacePolicy, QueuePolicy>::HandleError(const std::string &context,
+                                                         const std::string &additional_message) {
+  {
+    std::lock_guard<std::mutex> errors_lock(errors_mutex_);
+    errors_.push_back({std::current_exception(), context, additional_message});
+  }
+  exec_error_ = true;
+  ShutdownQueue();
+}
+
+template <typename WorkspacePolicy, typename QueuePolicy>
 void Executor<WorkspacePolicy, QueuePolicy>::PreRun() {
   auto batch_size = InferBatchSize(batch_size_providers_);
   batch_sizes_cpu_.push(batch_size);
@@ -189,10 +205,8 @@ void Executor<WorkspacePolicy, QueuePolicy>::RunCPUImpl(size_t iteration_id) {
     try {
       RunHelper(op_node, ws, iteration_id);
       FillStats(cpu_memory_stats_, ws, "CPU_" + op_node.instance_name, cpu_memory_stats_mutex_);
-    } catch (std::exception &e) {
-      HandleError("CPU", op_node, e.what());
     } catch (...) {
-      HandleError();
+      HandleError(op_node);
     }
   }
 
@@ -240,10 +254,8 @@ void Executor<WorkspacePolicy, QueuePolicy>::RunMixedImpl(size_t iteration_id) {
         }
         CUDA_CALL(cudaGetLastError());
       }
-    } catch (std::exception &e) {
-      HandleError("Mixed", op_node, e.what());
     } catch (...) {
-      HandleError();
+      HandleError(op_node);
     }
   }
 
@@ -309,10 +321,8 @@ void Executor<WorkspacePolicy, QueuePolicy>::RunGPUImpl(size_t iteration_id) {
         CUDA_CALL(cudaEventRecord(ws.event(), ws.stream()));
       }
       CUDA_CALL(cudaGetLastError());
-    } catch (std::exception &e) {
-      HandleError("GPU", op_node, e.what());
     } catch (...) {
-      HandleError();
+      HandleError(op_node);
     }
   }
 
@@ -364,10 +374,8 @@ template <typename WorkspacePolicy, typename QueuePolicy>
 void Executor<WorkspacePolicy, QueuePolicy>::RunCPU() {
   try {
     RunCPUImpl(cpu_iteration_id_++);
-  } catch (std::exception &e) {
-    HandleError(make_string("Exception in CPU stage: ", e.what()));
   } catch (...) {
-    HandleError("Unknown error in CPU stage.");
+    HandleError("Exception in CPU stage: ");
   }
 }
 
@@ -375,10 +383,8 @@ template <typename WorkspacePolicy, typename QueuePolicy>
 void Executor<WorkspacePolicy, QueuePolicy>::RunMixed() {
   try {
     RunMixedImpl(mixed_iteration_id_++);
-  } catch (std::exception &e) {
-    HandleError(make_string("Exception in mixed stage: ", e.what()));
   } catch (...) {
-    HandleError("Unknown error in mixed stage.");
+    HandleError("Exception in mixed stage: ");
   }
 }
 
@@ -386,10 +392,8 @@ template <typename WorkspacePolicy, typename QueuePolicy>
 void Executor<WorkspacePolicy, QueuePolicy>::RunGPU() {
   try {
     RunGPUImpl(gpu_iteration_id_++);
-  } catch (std::exception &e) {
-    HandleError(make_string("Exception in GPU stage: ", e.what()));
   } catch (...) {
-    HandleError("Unknown error in GPU stage.");
+    HandleError("Exception in GPU stage: ");
   }
 }
 

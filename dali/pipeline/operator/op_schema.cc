@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// Copyright (c) 2017-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -56,6 +56,8 @@ const OpSchema *SchemaRegistry::TryGetSchema(const std::string &name) {
 
 
 OpSchema::OpSchema(const std::string &name) : name_(name) {
+  // Process the module path and operator name
+  InitNames();
   // Fill internal arguments
   AddInternalArg("num_threads", "Number of CPU threads in a thread pool", -1);
   AddInternalArg("max_batch_size", "Max batch size", -1);
@@ -78,6 +80,51 @@ to accommodate a batch of samples of this size.)code",
   AddOptionalArg("preserve", R"code(Prevents the operator from being removed from the
 graph even if its outputs are not used.)code",
                  false);
+
+  // For simplicity we pass StackSummary as 4 separate arguments so we don't need to extend DALI
+  // with support for special FrameSummary type.
+  // List of FrameSummaries can be reconstructed using utility functions.
+  AddOptionalArg("_origin_stack_filename", R"code(Every operator defined in Python captures and
+processes the StackSummary (a List[FrameSummary], defined in Python traceback module) that describes
+the callstack between the start of pipeline definition tracing and the "call" to the operator
+(or full trace if the operator is defined outside the pipeline).
+This information is propagated to the backend, so it can be later used to produce meaningful error
+messages, pointing to the origin of the error in pipeline definition.
+
+The list of FrameSummaries is split into four parameters: each is the list containing corresponding
+parameters of FrameSummary. This parameter represents the `filename` member.)code",
+                 std::vector<std::string>{});
+
+  AddOptionalArg("_origin_stack_lineno", R"code(StackSummary - lineno member of FrameSummary, see
+_origin_stack_filename for more information.)code",
+                 std::vector<int>{});
+
+  AddOptionalArg("_origin_stack_name", R"code(StackSummary - name member of FrameSummary, see
+_origin_stack_filename for more information.)code",
+                 std::vector<std::string>{});
+
+  AddOptionalArg("_origin_stack_line", R"code(StackSummary - line member of FrameSummary, see
+_origin_stack_filename for more information.)code",
+                 std::vector<std::string>{});
+
+  AddOptionalArg("_pipeline_internal", R"code(Boolean specifying if this operator was defined within
+a pipeline scope. False if it was defined without pipeline being set as current.)code",
+                 true);
+
+  std::string default_module = "nvidia.dali.ops";
+  for (const auto &submodule : ModulePath()) {
+    default_module += "." + submodule;
+  }
+
+  AddOptionalArg("_module",
+                 "String identifying the module in which the operator is defined. "
+                 "Most of the time it is `__module__` of the API function/class.",
+                 default_module);
+
+  AddOptionalArg("_display_name",
+                 "Operator name as presented in the API it was instantiated in (without the module "
+                 "path), for example: cast_like or CastLike.",
+                 OperatorName());
 }
 
 
@@ -85,6 +132,25 @@ const std::string &OpSchema::name() const {
   return name_;
 }
 
+const std::vector<std::string> &OpSchema::ModulePath() const {
+  return module_path_;
+}
+
+const std::string &OpSchema::OperatorName() const {
+  return operator_name_;
+}
+
+void OpSchema::InitNames() {
+  static std::string kDelim = "__";
+  std::string::size_type start_pos = 0;
+  auto end_pos = name_.find(kDelim);
+  while (end_pos != std::string::npos) {
+    module_path_.push_back(name_.substr(start_pos, end_pos - start_pos));
+    start_pos = end_pos + kDelim.size();
+    end_pos = name_.find(kDelim, start_pos);
+  }
+  operator_name_ = name_.substr(start_pos);
+}
 
 OpSchema &OpSchema::DocStr(const string &dox) {
   dox_ = dox;

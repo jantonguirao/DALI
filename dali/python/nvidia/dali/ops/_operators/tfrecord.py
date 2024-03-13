@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2023-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,80 +29,62 @@ def tfrecord_enabled():
     return False
 
 
-class _TFRecordReaderImpl:
-    """custom wrappers around ops"""
+if tfrecord_enabled():
 
-    def __init__(self, path, index_path, features, **kwargs):
-        if isinstance(path, list):
-            self._path = path
-        else:
-            self._path = [path]
-        if isinstance(index_path, list):
-            self._index_path = index_path
-        else:
-            self._index_path = [index_path]
-        self._schema = _b.GetSchema(self._internal_schema_name)
-        self._spec = _b.OpSpec(self._internal_schema_name)
-        self._device = "cpu"
+    def _get_impl(name, schema_name, internal_schema_name):
 
-        self._init_args, self._call_args = ops._separate_kwargs(kwargs)
-        self._init_args.update({"path": self._path, "index_path": self._index_path})
-        self._name = self._init_args.pop("name", None)
-        self._preserve = self._init_args.get("preserve", False)
+        class _TFRecordReaderImpl(
+            ops.python_op_factory(name, schema_name, internal_schema_name, generated=False)
+        ):
+            """custom wrappers around ops"""
 
-        for key, value in self._init_args.items():
-            self._spec.AddArg(key, value)
+            def __init__(self, path, index_path, features, **kwargs):
+                if isinstance(path, list):
+                    self._path = path
+                else:
+                    self._path = [path]
+                if isinstance(index_path, list):
+                    self._index_path = index_path
+                else:
+                    self._index_path = [index_path]
 
-        self._features = features
+                kwargs.update({"path": self._path, "index_path": self._index_path})
+                self._features = features
 
-    @property
-    def spec(self):
-        return self._spec
+                super().__init__(**kwargs)
 
-    @property
-    def schema(self):
-        return self._schema
+            def __call__(self, *inputs, **kwargs):
+                feature_names = []
+                features = []
+                for feature_name, feature in self._features.items():
+                    feature_names.append(feature_name)
+                    features.append(feature)
+                    if not isinstance(feature, _b.tfrecord.Feature):
+                        raise TypeError(
+                            "Expected `nvidia.dali.tfrecord.Feature` for the "
+                            f'"{feature_name}", but got {type(feature)}. '
+                            "Use `nvidia.dali.tfrecord.FixedLenFeature` or "
+                            "`nvidia.dali.tfrecord.VarLenFeature` "
+                            "to define the features to extract."
+                        )
 
-    @property
-    def device(self):
-        return self._device
+                kwargs.update({"feature_names": feature_names, "features": features})
 
-    @property
-    def preserve(self):
-        return self._preserve
+                # We won't have MIS as this op doesn't have any inputs (Reader)
+                linear_outputs = super().__call__(*inputs, **kwargs)
+                # We may have single, flattened output
+                if not isinstance(linear_outputs, list):
+                    linear_outputs = [linear_outputs]
+                outputs = {}
+                for feature_name, output in zip(feature_names, linear_outputs):
+                    outputs[feature_name] = output
 
-    def __call__(self, *inputs, **kwargs):
-        # We do not handle multiple input sets for Reader as they do not have inputs
-        args, arg_inputs = ops._separate_kwargs(kwargs)
+                return outputs
 
-        args = ops._resolve_double_definitions(args, self._init_args, keep_old=False)
-        if self._name is not None:
-            args = ops._resolve_double_definitions(args, {"name": self._name})  # restore the name
+        return _TFRecordReaderImpl
 
-        self._preserve = self._preserve or args.get("preserve", False) or self._schema.IsNoPrune()
+    class TFRecordReader(_get_impl("_TFRecordReader", "TFRecordReader", "_TFRecordReader")):
+        pass
 
-        feature_names = []
-        features = []
-        for feature_name, feature in self._features.items():
-            feature_names.append(feature_name)
-            features.append(feature)
-
-        # Those arguments are added after the outputs are generated
-        self.spec.AddArg("feature_names", feature_names)
-        self.spec.AddArg("features", features)
-
-        op_instance = ops._OperatorInstance(inputs, arg_inputs, args, self._init_args, self)
-
-        outputs = {}
-        for feature_name, output in zip(feature_names, op_instance.outputs):
-            outputs[feature_name] = output
-
-        return outputs
-
-
-class TFRecordReader(_TFRecordReaderImpl, metaclass=ops._DaliOperatorMeta):
-    _internal_schema_name = "_TFRecordReader"
-
-
-class TFRecord(_TFRecordReaderImpl, metaclass=ops._DaliOperatorMeta):
-    _internal_schema_name = "readers___TFRecord"
+    class TFRecord(_get_impl("_TFRecord", "readers__TFRecord", "readers___TFRecord")):
+        pass

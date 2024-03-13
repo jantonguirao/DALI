@@ -1,4 +1,4 @@
-# Copyright (c) 2017-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2017-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,8 @@ from nvidia.dali.types import (  # noqa: F401
 from nvidia.dali import _conditionals
 
 from nvidia.dali.ops import _registry, _names, _docs, _operator_utils  # noqa: F401
+
+from nvidia.dali._utils import dali_trace as _dali_trace
 
 # reexpose what was previously visible:
 from nvidia.dali.ops._registry import (  # noqa: F401
@@ -372,6 +374,7 @@ class _OperatorInstance(object):
         self._op = op
         self._spec = op.spec.copy()
         self._relation_id = self._counter.id
+
         # TODO(klecki): Replace "type(op).__name__" with proper name formatting based on backend
 
         if _conditionals.conditionals_enabled():
@@ -379,6 +382,7 @@ class _OperatorInstance(object):
             _conditionals.inject_implicit_scope_argument(op._schema, arg_inputs)
 
         self._process_instance_name(arguments)
+        self._process_trace(arguments)
         _process_arguments(op._schema, self._spec, arguments, type(op).__name__)
 
         self._inputs = _process_inputs(op._schema, self._spec, inputs, type(op).__name__)
@@ -410,6 +414,25 @@ class _OperatorInstance(object):
             self._name = name
         else:
             self._name = "__" + type(self._op).__name__ + "_" + str(self._counter.id)
+
+    def _process_trace(self, arguments):
+        from nvidia.dali._debug_mode import _PipelineDebug
+
+        current_pipeline = _PipelineDebug.current()
+        is_debug = getattr(current_pipeline, "_debug_on", False)
+        if _dali_trace.is_tracing_enabled() and not is_debug:
+            if _Pipeline.current():
+                start_frame = _Pipeline.current()._definition_frame_start
+            else:
+                start_frame = 0
+            end_frame = self._op._definition_frame_end
+            stack_summary = _dali_trace.extract_stack(start_frame=start_frame, end_frame=end_frame)
+            filenames, linenos, names, lines = _dali_trace.preprocess_stack_summary(stack_summary)
+
+            arguments["_origin_stack_filename"] = filenames
+            arguments["_origin_stack_lineno"] = linenos
+            arguments["_origin_stack_name"] = names
+            arguments["_origin_stack_line"] = lines
 
     def _generate_outputs(self):
         pipeline = _Pipeline.current()
@@ -494,10 +517,29 @@ def _check_arg_input(schema, op_name, name):
         )
 
 
-def python_op_factory(name, schema_name=None):
+def python_op_factory(name, schema_name, internal_schema_name=None, generated=True):
+    """Generate the ops API class bindings for operator.
+
+    Parameters
+    ----------
+    name : str
+        The name of the operator (without the module) - this will be the name of the class
+    schema_name : str
+        Name of the schema, used for documentation lookups and schema/spec retrieval unless
+        internal_schema_name  is provided
+    internal_schema_name : str, optional
+        If provided, this will be the schema used to process the arguments, by default None
+    generated : bool, optional
+        Mark this class as fully generated API binding (True), or as a (base) class used for
+        manually extending the binding code (False), by default True.
+    """
+
     class Operator(metaclass=_DaliOperatorMeta):
         def __init__(self, *, device="cpu", **kwargs):
-            schema_name = _schema_name(type(self))
+            if self._internal_schema_name is None:
+                schema_name = _schema_name(type(self))
+            else:
+                schema_name = self._internal_schema_name
             self._spec = _b.OpSpec(schema_name)
             self._schema = _b.GetSchema(schema_name)
 
@@ -520,6 +562,15 @@ def python_op_factory(name, schema_name=None):
             # but the error message would be worse or delayed.
             # Name is handled in the op instance, keep it for later.
             self._name = self._init_args.pop("name", None)
+            # Stack frame is also processed by the operator instance and we need to remove it
+            # before it is validated against Schema.
+            if _dali_trace.is_tracing_enabled():
+                self._definition_frame_end = self._init_args.pop("_definition_frame_end", None)
+            # Capture the ops API display name if it didn't arrive from fn API.
+            if "_module" not in self._init_args:
+                self._init_args.update({"_module": Operator.__module__.replace(".hidden", "")})
+            if "_display_name" not in self._init_args:
+                self._init_args.update({"_display_name": type(self).__name__})
             _process_arguments(self._schema, self._spec, self._init_args, type(self).__name__)
 
         @property
@@ -549,6 +600,9 @@ def python_op_factory(name, schema_name=None):
             args = _resolve_double_definitions(args, self._init_args, keep_old=False)
             if self._name is not None:
                 args = _resolve_double_definitions(args, {"name": self._name})  # restore the name
+
+            if _dali_trace.is_tracing_enabled() and self._definition_frame_end is None:
+                self._definition_frame_end = _dali_trace.get_stack_depth() - 1
 
             self._preserve = (
                 self._preserve or args.get("preserve", False) or self._schema.IsNoPrune()
@@ -581,8 +635,9 @@ def python_op_factory(name, schema_name=None):
             return result
 
     Operator.__name__ = str(name)
-    Operator.schema_name = schema_name or Operator.__name__
-    Operator._generated = True  # The class was generated using python_op_factory
+    Operator.schema_name = schema_name
+    Operator._internal_schema_name = internal_schema_name
+    Operator._generated = generated
     Operator.__call__.__doc__ = _docs._docstring_generator_call(Operator.schema_name)
     return Operator
 
@@ -632,10 +687,6 @@ def _load_readers_tfrecord():
     if not tfrecord.tfrecord_enabled():
         return
 
-    tfrecord._TFRecordReaderImpl.__call__.__doc__ = _docs._docstring_generator_call(
-        "readers__TFRecord"
-    )
-
     _registry.register_cpu_op("readers__TFRecord")
     _registry.register_cpu_op("TFRecordReader")
 
@@ -645,7 +696,6 @@ def _load_readers_tfrecord():
         ("readers__TFRecord", tfrecord.TFRecord),
         ("TFRecordReader", tfrecord.TFRecordReader),
     ]:
-        op_class.schema_name = op_reg_name
         _, submodule, op_name = _process_op_name(op_reg_name)
         module = _internal.get_submodule(ops_module, submodule)
         if not hasattr(module, op_name):
@@ -738,7 +788,6 @@ _internal._adjust_operator_module(ExternalSource, sys.modules[__name__], [])
 
 # Expose the PythonFunction family of classes and generate the fn bindings for them
 from nvidia.dali.ops._operators.python_function import (  # noqa: E402, F401
-    PythonFunctionBase,  # noqa: F401
     PythonFunction,
     DLTensorPythonFunction,
     _dlpack_to_array,  # noqa: F401
@@ -752,12 +801,10 @@ _wrap_op(PythonFunction)
 _wrap_op(DLTensorPythonFunction)
 
 # Compose is only exposed for ops API, no fn bindings are generated
-from nvidia.dali.ops._operators.compose import Compose  # noqa: E402, F401
+from nvidia.dali.ops._operators.compose import Compose as Compose  # noqa: E402, F401
 
 _internal._adjust_operator_module(Compose, sys.modules[__name__], [])
 
-_registry.register_cpu_op("Compose")
-_registry.register_gpu_op("Compose")
 
 from nvidia.dali.ops._operators.math import (  # noqa: F401, E402
     _arithm_op,
