@@ -130,8 +130,9 @@ void VideoDecoderMixed::Run(dali::Workspace &ws) {
 
           uint8_t *dpFrame = output_data + num_frames * sample.demuxer_->GetHeight() * sample.demuxer_->GetWidth() * 3;
           int nWidth = sample.decoder_->GetWidth();
-          int nPitch = nWidth * 4;
+          int nPitch = sample.decoder_->GetWidth();
           int iMatrix = sample.decoder_->GetVideoFormatInfo().video_signal_description.matrix_coefficients;
+          bool full_range = sample.decoder_->GetVideoFormatInfo().video_signal_description.video_full_range_flag;
 
           // if (sample.decoder_->GetBitDepth() == 8) {
           //   if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
@@ -159,7 +160,7 @@ void VideoDecoderMixed::Run(dali::Workspace &ws) {
             sample.decoder_->GetWidth() * 3,
             sample.decoder_->GetWidth(),
             sample.decoder_->GetHeight(),
-            false,
+            full_range,
             cuStream);
             CUDA_CALL(cudaStreamSynchronize(cuStream));
 
