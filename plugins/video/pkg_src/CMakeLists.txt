@@ -31,6 +31,7 @@ add_subdirectory("${pynvvideocodec_SOURCE_DIR}/src/VideoCodecSDKUtils/")
 
 set(VIDEO_PLUGIN_SOURCES
     src/decoder/video_decoder_mixed.cc
+    src/decoder/color_space.cu
 )
 
 set(PLUGIN_NAME "video")

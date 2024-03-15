@@ -17,6 +17,8 @@
 #include "VideoCodecSDKUtils/helper_classes/Utils/ColorSpace.h"
 #include "VideoCodecSDKUtils/helper_classes/Utils/NvCodecUtils.h"
 
+#include "dali/kernels/imgproc/color_manipulation/color_space_conversion_impl.h"
+
 namespace dali_video {
 
 class MemoryVideoFile : public FFmpegDemuxer::DataProvider {
@@ -58,9 +60,9 @@ bool VideoDecoderMixed::SetupImpl(
     sample.demuxer_ = std::make_unique<FFmpegDemuxer>(sample.data_provider_.get());
     sample.current_packet_ = std::make_unique<PacketData>();
     
-    std::cout << "Sample #" << i << " {50 x " << sample.demuxer_->GetHeight() << " x " << sample.demuxer_->GetWidth() << " x " << 4 << "}\n";
+    std::cout << "Sample #" << i << " {50 x " << sample.demuxer_->GetHeight() << " x " << sample.demuxer_->GetWidth() << " x " << 3 << "}\n";
     
-    sh.set_tensor_shape(i, dali::TensorShape<>(50, sample.demuxer_->GetHeight(), sample.demuxer_->GetWidth(), 4));
+    sh.set_tensor_shape(i, dali::TensorShape<>(50, sample.demuxer_->GetHeight(), sample.demuxer_->GetWidth(), 3));
   }
   output_desc.resize(1);
   output_desc[0].shape = sh;
@@ -126,28 +128,40 @@ void VideoDecoderMixed::Run(dali::Workspace &ws) {
           pFrame = sample.decoder_->GetFrame();
           std::cout << "Frame " << nFrame++ << " decoded in the operator" << std::endl;
 
-          uint8_t *dpFrame = output_data + num_frames * sample.demuxer_->GetHeight() * sample.demuxer_->GetWidth() * 4;
+          uint8_t *dpFrame = output_data + num_frames * sample.demuxer_->GetHeight() * sample.demuxer_->GetWidth() * 3;
           int nWidth = sample.decoder_->GetWidth();
           int nPitch = nWidth * 4;
           int iMatrix = sample.decoder_->GetVideoFormatInfo().video_signal_description.matrix_coefficients;
 
-          if (sample.decoder_->GetBitDepth() == 8) {
-            if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
-              std::cout << "YUV444" << std::endl;
-              YUV444ToColor32<RGBA32>(pFrame, sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
-            } else {
-              std::cout << "YUV420" << std::endl;
-              Nv12ToColor32<RGBA32>(pFrame, sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
-            }
-          } else {
-            if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
-              std::cout << "YUV444P16" << std::endl;
-              YUV444P16ToColor32<RGBA32>(pFrame, 2 * sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
-            } else {
-              std::cout << "YUV420P16" << std::endl;
-              P016ToColor32<RGBA32>(pFrame, 2 * sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
-            }
-          }
+          // if (sample.decoder_->GetBitDepth() == 8) {
+          //   if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
+          //     std::cout << "YUV444" << std::endl;
+          //     YUV444ToColor32<RGBA32>(pFrame, sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+          //   } else {
+          //     std::cout << "YUV420" << std::endl;
+          //     Nv12ToColor32<RGBA32>(pFrame, sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+          //   }
+          // } else {
+          //   if (sample.decoder_->GetOutputFormat() == cudaVideoSurfaceFormat_YUV444) {
+          //     std::cout << "YUV444P16" << std::endl;
+          //     YUV444P16ToColor32<RGBA32>(pFrame, 2 * sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+          //   } else {
+          //     std::cout << "YUV420P16" << std::endl;
+          //     P016ToColor32<RGBA32>(pFrame, 2 * sample.decoder_->GetWidth(), (uint8_t *)dpFrame, nPitch, sample.decoder_->GetWidth(), sample.decoder_->GetHeight(), iMatrix);
+          //   }
+          // }
+
+          // std::cout << "DALI color change" << std::cout;
+          //   yuv_to_rgb(
+          //     pFrame,
+          //     nPitch,
+          //     (uint8_t *)dpFrame,
+          //     sample.decoder_->GetWidth() * 3,
+          //     sample.decoder_->GetWidth(),
+          //     sample.decoder_->GetHeight(),
+          //     false,
+          //     cuStream);
+          //   CUDA_CALL(cudaStreamSynchronize(cuStream));
 
           ++num_frames;
         }
