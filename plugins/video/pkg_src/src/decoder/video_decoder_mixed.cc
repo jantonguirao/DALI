@@ -21,6 +21,7 @@
 
 namespace dali_video {
 
+
 class MemoryVideoFile : public FFmpegDemuxer::DataProvider {
  public:
   MemoryVideoFile(const void *data, int64_t size)
@@ -57,12 +58,14 @@ bool VideoDecoderMixed::SetupImpl(
   for (int i = 0; i < batch_size; i++) {
     auto& sample = samples_[i];
     sample.data_provider_ = std::make_unique<MemoryVideoFile>(input.raw_tensor(i), input[i].shape().num_elements());
-    sample.demuxer_ = std::make_unique<FFmpegDemuxer>(sample.data_provider_.get());
+    sample.demuxer_ = std::make_unique<DALIFFmpegDemuxer>(sample.data_provider_.get());
     sample.current_packet_ = std::make_unique<PacketData>();
     
-    std::cout << "Sample #" << i << " {50 x " << sample.demuxer_->GetHeight() << " x " << sample.demuxer_->GetWidth() << " x " << 3 << "}\n";
-    
-    sh.set_tensor_shape(i, dali::TensorShape<>(50, sample.demuxer_->GetHeight(), sample.demuxer_->GetWidth(), 3));
+    std::cout << "Sample #" << i << " {" << sample.demuxer_->NumFrames() << " x " << sample.demuxer_->GetHeight() << " x " << sample.demuxer_->GetWidth() << " x " << 3 << "}\n";
+    std::cout << "Is VFR: " << sample.demuxer_->IsVFR() << std::endl;
+    std::cout << "Num frames: " << sample.demuxer_->NumFrames() << std::endl;
+     
+    sh.set_tensor_shape(i, dali::TensorShape<>(sample.demuxer_->NumFrames(), sample.demuxer_->GetHeight(), sample.demuxer_->GetWidth(), 3));
   }
   output_desc.resize(1);
   output_desc[0].shape = sh;

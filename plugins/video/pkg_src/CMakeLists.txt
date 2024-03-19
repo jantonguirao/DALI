@@ -44,13 +44,32 @@ FetchContent_Declare(
 )
 FetchContent_Populate(pynvvideocodec)
 
+# Modify pynvvideocodec source code to make it compatible with DALI
+# This is a workaround to be able to access private members of the FFmpegDemuxer class
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/modify_pynvvideocodec.stamp
+    COMMAND sed -i 's/private:/public:/g'  ${pynvvideocodec_SOURCE_DIR}/src/VideoCodecSDKUtils/helper_classes/Utils/FFmpegDemuxer.h
+    COMMAND touch ${CMAKE_CURRENT_BINARY_DIR}/modify_pynvvideocodec.stamp
+    COMMENT "Modifying pynvvideocodec source code"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS ${pynvvideocodec_SOURCE_DIR}
+)
+
+add_custom_target(
+    ModifyPynvvideocodec
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/modify_pynvvideocodec.stamp
+)
+
 include(ffmpeg.cmake)
 
 message(STATUS "pynvvideocodec_SOURCE_DIR=${pynvvideocodec_SOURCE_DIR}")
 include_directories(SYSTEM "${pynvvideocodec_SOURCE_DIR}/src/")
+
+
 set(USE_PKGCONFIG OFF)
 set(ENV{FFMPEG_DIR} ${FFMPEG_DIR})
 add_subdirectory("${pynvvideocodec_SOURCE_DIR}/src/VideoCodecSDKUtils/")
+
 
 set(VIDEO_PLUGIN_SOURCES
     src/decoder/video_decoder_mixed.cc
@@ -63,6 +82,8 @@ set_target_properties(dali_${PLUGIN_NAME} PROPERTIES CUDA_ARCHITECTURES OFF)
 target_include_directories(dali_${PLUGIN_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_directories(dali_${PLUGIN_NAME} PUBLIC ${DALI_LIB_DIR})
 target_link_libraries(dali_${PLUGIN_NAME} PUBLIC dali dali_core dali_kernels VideoCodecSDKUtils)
+
+add_dependencies(dali_${PLUGIN_NAME} ModifyPynvvideocodec)
 
 # Generates .pyi stubs
 # Need to add the _deps/ffmpeg/lib dir so that the plugin can be loaded

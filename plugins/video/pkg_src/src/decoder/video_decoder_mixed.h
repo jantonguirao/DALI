@@ -24,6 +24,19 @@
 
 namespace dali_video {
 
+class DALIFFmpegDemuxer : public FFmpegDemuxer  {
+ public:
+  DALIFFmpegDemuxer(DataProvider *dp) : FFmpegDemuxer(dp) {}
+
+  int NumFrames() {
+    int64_t num_frames = fmtc->streams[iVideoStream]->nb_frames;
+    DALI_ENFORCE(num_frames >= 0, "Number of frames is not known for the video file");
+
+    return num_frames;
+  }
+};
+
+
 class VideoDecoderMixed
         : public dali::Operator<dali::MixedBackend> {
 
@@ -59,7 +72,7 @@ class VideoDecoderMixed
 
   struct SampleCtx {
     std::unique_ptr<FFmpegDemuxer::DataProvider> data_provider_;
-    std::unique_ptr<FFmpegDemuxer> demuxer_;
+    std::unique_ptr<DALIFFmpegDemuxer> demuxer_;
     std::unique_ptr<NvDecoder> decoder_;
     std::shared_ptr<PacketData> current_packet_;
   };
