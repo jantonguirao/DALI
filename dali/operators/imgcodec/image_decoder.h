@@ -19,6 +19,7 @@
 #include "dali/core/call_at_exit.h"
 #include "dali/core/mm/memory.h"
 #include "dali/operators.h"
+#include "dali/operators/decoder/nvjpeg/nvjpeg_helper.h"
 #include "dali/operators/decoder/cache/cached_decoder_impl.h"
 #include "dali/operators/generic/slice/slice_attr.h"
 #include "dali/operators/image/crop/crop_attr.h"
@@ -30,6 +31,10 @@
 #include "dali/pipeline/operator/checkpointing/stateless_operator.h"
 #include "dali/pipeline/operator/common.h"
 #include "dali/pipeline/operator/operator.h"
+
+// TODO(janton): remove this when there's no need to query the HW decoder config
+// nvjpeg dynlink wrapper, or true if linking statically
+bool nvjpegIsSymbolAvailable(const char *name);
 
 #if not(WITH_DYNAMIC_NVIMGCODEC_ENABLED)
 nvimgcodecStatus_t get_libjpeg_turbo_extension_desc(nvimgcodecExtensionDesc_t* ext_desc);
@@ -354,8 +359,31 @@ class ImageDecoder : public StatelessOperator<Backend> {
     opts_.add_module_option("nvjpeg_cuda_decoder", "preallocate_buffers", true);
 
     // Batch size
-    opts_.add_module_option("nvjpeg_hw_decoder", "preallocate_batch_size",
-                            std::max(1, max_batch_size_));
+    int hw_batch_size = max_batch_size_;
+    // TODO(janton): workaround to be removed
+    if (need_nvjpeg_hw_preallocate_fix()) {
+      hw_batch_size = 0;
+      if (hw_load > 0.f) {
+        nvjpegHandle_t handle;
+        unsigned int nvjpeg_flags = 0;
+        unsigned int num_hw_engines = 1;
+        unsigned int num_hw_cores_per_engine = 1;
+        if (nvjpegCreateEx(NVJPEG_BACKEND_HARDWARE, NULL, NULL, nvjpeg_flags, &handle) == NVJPEG_STATUS_SUCCESS) {
+          if (nvjpegIsSymbolAvailable("nvjpegGetHardwareDecoderInfo")) {
+            nvjpegGetHardwareDecoderInfo(handle, &num_hw_engines, &num_hw_cores_per_engine);
+          } else {
+            DALI_WARN("nvjpegGetHardwareDecoderInfo API not available. Assuming 5 cores per engine.");
+            num_hw_engines = 1;
+            num_hw_cores_per_engine = 5;
+          }
+          CUDA_CALL(nvjpegDestroy(handle));
+        } else {
+          LOG_LINE << "Failed to create nvjpeg handle for the Hardware backend.\n";
+        }
+      }
+    }
+    opts_.add_module_option("nvjpeg_hw_decoder", "preallocate_batch_size", hw_batch_size);
+
     // Nvjpeg2k parallel tiles
     opts_.add_module_option("nvjpeg2k_cuda_decoder", "num_parallel_tiles", 16);
 
@@ -610,6 +638,18 @@ class ImageDecoder : public StatelessOperator<Backend> {
     return !version_at_least(0, 3, 0);
   }
 
+  /**
+   * @brief nvImageCodec up to 0.3 doesn't take into account the hw load hint for the memory
+   *        preallocation, which causes some cuMemFree calls during the decoding, later in the
+   *        pipeline execution. This workarounds this issue by limiting the preallocate batch size
+   *        on the DALI side.
+   */
+  bool need_nvjpeg_hw_preallocate_fix() {
+    int major, minor, patch;
+    get_nvimgcodec_version(&major, &minor, &patch);
+    return !version_at_least(0, 4, 0);
+  }
+
   template <typename OutBackend>
   void PrepareOutput(SampleState &st, SampleView<OutBackend> out, const ROI &roi,
                      const Workspace &ws) {
@@ -803,6 +843,8 @@ class ImageDecoder : public StatelessOperator<Backend> {
       }
       return false;
     };
+
+    // TODO(janton): workaround to be removed
     if (ws.has_stream() && need_host_sync_alloc() && any_need_processing()) {
       DomainTimeRange tr("alloc sync", DomainTimeRange::kOrange);
       CUDA_CALL(cudaStreamSynchronize(ws.stream()));
