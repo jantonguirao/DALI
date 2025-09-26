@@ -28,7 +28,6 @@ from . import _eval_mode
 from . import _invocation
 import nvtx
 
-
 def _backend_device(backend: Union[_backend.TensorListCPU, _backend.TensorListGPU]) -> Device:
     if isinstance(backend, _backend.TensorListCPU):
         return Device("cpu")
@@ -36,7 +35,6 @@ def _backend_device(backend: Union[_backend.TensorListCPU, _backend.TensorListGP
         return Device("gpu", backend.device_id())
     else:
         raise ValueError(f"Unsupported backend type: {type(backend)}")
-
 
 def _is_tensor_type(x):
     from . import _batch
