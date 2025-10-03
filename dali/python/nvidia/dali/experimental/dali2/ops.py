@@ -38,17 +38,10 @@ class Operator:
         self._num_inputs = num_inputs
         self._call_arg_names = None if call_arg_names is None else tuple(call_arg_names)
         self._api_type = None
-        if isinstance(device, str):
-            self._device = _device.Device(
-                name=device,
-                device_id=kwargs.get("device_id", _device.Device.default_device_id(device)),
-            )
-        else:
-            if not isinstance(device, _device.Device):
-                raise TypeError(
-                    f"`device` must be a Device instance or a string, got {type(device)}"
-                )
-            self._device = device
+
+        from ._device import device as _to_device
+        self._device = _to_device(device)
+
         self._input_meta = []
         self._arg_meta = {}
         self._num_outputs = None

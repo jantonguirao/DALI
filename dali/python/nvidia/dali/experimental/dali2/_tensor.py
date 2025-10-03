@@ -67,7 +67,7 @@ class Tensor:
         self,
         data: Optional[Any] = None,
         dtype: Optional[Any] = None,
-        device: Optional[Device] = None,
+        device: Optional[Union[Device, str, "torch.device"]] = None,
         layout: Optional[str] = None,
         batch: Optional[Any] = None,
         index_in_batch: Optional[int] = None,
@@ -91,6 +91,9 @@ class Tensor:
         self._wraps_external_data = False
 
         copied = False
+
+        from ._device import device as _to_device
+        device = _to_device(device)
 
         from . import _fn
 
