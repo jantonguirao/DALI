@@ -28,43 +28,47 @@ from nvidia.dali import internal as _internal
 from nvidia.dali.ops import _docs, _names
 
 
-def _handle_rng_argument(raw_kwargs, batch_size):
+def _handle_rng_argument(raw_kwargs, is_batch, batch_size):
     """Handle RNG argument processing for random operators.
-    
+
     This function:
     1. Pops the 'rng' argument from raw_kwargs
     2. Uses default RNG if no explicit rng or seed is provided
     3. Generates _random_state from the RNG if present
     4. Removes 'seed' argument if _random_state is generated or provided
     5. Adds _random_state to raw_kwargs if generated
-    
+
     Parameters
     ----------
     raw_kwargs : dict
         The keyword arguments dictionary to process (modified in-place).
+    is_batch : bool
+        True for batch mode, False for tensor mode.
     batch_size : int or None
-        The batch size (for batch mode) or None (for tensor mode).
+        The batch size (for batch mode).
     """
     # Pop rng from kwargs
     rng = raw_kwargs.pop("rng", None)
-    
-    # Check if _random_state is already provided directly
-    if "_random_state" not in raw_kwargs:
+
+    # Check if _random_state is already provided directly (not None)
+    _random_state = raw_kwargs.get("_random_state")
+    if _random_state is None:
         # If no explicit rng provided but seed is not specified, use default RNG
         if rng is None and "seed" not in raw_kwargs:
             from . import random as _random
+
             rng = _random.get_default_rng()
-        
+
         if rng is not None:
             # Generate random state from RNG
-            if batch_size is not None:
+            if is_batch:
                 # Batch mode: generate separate random state for each sample
                 # Pass plain Python lists to Tensor - no numpy needed
                 random_state_tensors = [
                     Tensor(
-                        [rng() for _ in range(6)],
+                        [rng() for _ in range(7)],
                         dtype=_type.dtype(nvidia.dali.types.UINT32),
-                        device="cpu"
+                        device="cpu",
                     )
                     for _ in range(batch_size)
                 ]
@@ -73,13 +77,13 @@ def _handle_rng_argument(raw_kwargs, batch_size):
                 # Tensor mode: single random state
                 # Pass plain Python list to Tensor - no numpy needed
                 raw_kwargs["_random_state"] = Tensor(
-                    [rng() for _ in range(6)],
+                    [rng() for _ in range(7)],
                     dtype=_type.dtype(nvidia.dali.types.UINT32),
-                    device="cpu"
+                    device="cpu",
                 )
-    
+
     # Remove seed argument if _random_state is present (either passed or generated)
-    if "_random_state" in raw_kwargs:
+    if raw_kwargs.get("_random_state") is not None:
         raw_kwargs.pop("seed", None)
 
 
@@ -322,8 +326,10 @@ def build_call_function(schema, op_class):
     stateful = op_class.is_stateful
     call_args = []
     used_kwargs = set()
-    has_random_state = schema.HasArgument("_random_state") and schema.IsTensorArgument("_random_state")
-    
+    has_random_state = schema.HasArgument("_random_state") and schema.IsTensorArgument(
+        "_random_state"
+    )
+
     for arg in schema.GetArgumentNames():
         if arg in _unsupported_args:
             continue
@@ -336,7 +342,7 @@ def build_call_function(schema, op_class):
         used_kwargs.add(arg)
 
     call_args = ["batch_size=None"] + call_args
-    
+
     # Add rng and _random_state arguments for operators with _random_state
     # _random_state can be passed directly (from functional wrapper) or generated from rng
     if has_random_state:
@@ -350,7 +356,7 @@ def build_call_function(schema, op_class):
     def call(self, *raw_args, batch_size=None, **raw_kwargs):
         from ._tensor import Tensor
         from ._batch import Batch
-        
+
         with nvtx.annotate(f"__call__: {self.op_name}", domain="op_builder"):
             self._pre_call(*raw_args, **raw_kwargs)
             with nvtx.annotate("__call__: get batch size", domain="op_builder"):
@@ -369,10 +375,10 @@ def build_call_function(schema, op_class):
                                 batch_size = x_batch_size
                 if not is_batch:
                     batch_size = self._max_batch_size or 1
-            
+
             # Handle rng and _random_state arguments for random operators
             if has_random_state:
-                _handle_rng_argument(raw_kwargs, batch_size)
+                _handle_rng_argument(raw_kwargs, is_batch, batch_size)
 
             inputs = []
             kwargs = {}
@@ -395,9 +401,13 @@ def build_call_function(schema, op_class):
                     for k, v in raw_kwargs.items():
                         if v is None:
                             continue
-                        kwargs[k] = _to_batch(
-                            v, batch_size, device=_device.Device("cpu"), dtype=_get_dtype(k)
-                        )
+                        # _random_state is already a Batch, don't convert it
+                        if k == "_random_state" and isinstance(v, Batch):
+                            kwargs[k] = v
+                        else:
+                            kwargs[k] = _to_batch(
+                                v, batch_size, device=_device.Device("cpu"), dtype=_get_dtype(k)
+                            )
             else:
                 with nvtx.annotate("__call__: convert to tensors", domain="op_builder"):
                     for inp in raw_args:
@@ -407,7 +417,11 @@ def build_call_function(schema, op_class):
                     for k, v in raw_kwargs.items():
                         if v is None:
                             continue
-                        kwargs[k] = _to_tensor(v, dtype=_get_dtype(k))
+                        # _random_state is already a Tensor, don't convert it
+                        if k == "_random_state" and isinstance(v, Tensor):
+                            kwargs[k] = v
+                        else:
+                            kwargs[k] = _to_tensor(v, dtype=_get_dtype(k))
 
             with nvtx.annotate("__call__: shallowcopy", domain="op_builder"):
                 inputs = [copy.copy(x) for x in inputs]
@@ -489,8 +503,10 @@ def build_fn_wrapper(op):
 
     fn_name = _to_snake_case(op.schema.OperatorName())
     inputs = _get_inputs(schema)
-    
-    has_random_state = schema.HasArgument("_random_state") and schema.IsTensorArgument("_random_state")
+
+    has_random_state = schema.HasArgument("_random_state") and schema.IsTensorArgument(
+        "_random_state"
+    )
 
     fixed_args = []
     tensor_args = []
@@ -498,6 +514,9 @@ def build_fn_wrapper(op):
     used_kwargs = set()
     for arg in op.schema.GetArgumentNames():
         if arg in _unsupported_args:
+            continue
+        # Skip _random_state from tensor_args as it's handled separately
+        if arg == "_random_state":
             continue
         if op.schema.IsTensorArgument(arg):
             tensor_args.append(arg)
@@ -509,7 +528,7 @@ def build_fn_wrapper(op):
             signature_args.append(f"{arg}=None")
         else:
             signature_args.append(arg)
-    
+
     # Add rng argument for operators with _random_state
     if has_random_state:
         signature_args.append("rng=None")
@@ -517,23 +536,26 @@ def build_fn_wrapper(op):
     header = f"{fn_name}({', '.join(inputs + signature_args)})"
 
     def fn_call(*inputs, batch_size=None, device=None, **raw_kwargs):
+        is_batch = batch_size is not None
         if batch_size is None:
             for x in inputs:
                 x_batch_size = _get_batch_size(x)
                 if x_batch_size is not None:
+                    is_batch = True
                     batch_size = x_batch_size
                     break
         if batch_size is None:
             for arg in raw_kwargs.values():
                 x_batch_size = _get_batch_size(arg)
                 if x_batch_size is not None:
+                    is_batch = True
                     batch_size = x_batch_size
                     break
 
         # Handle rng argument for random operators
         if has_random_state:
-            _handle_rng_argument(raw_kwargs, batch_size)
-        
+            _handle_rng_argument(raw_kwargs, is_batch, batch_size)
+
         max_batch_size = _next_pow2(batch_size or 1)
         init_args = {
             arg: _scalar_decay(raw_kwargs[arg])
@@ -545,6 +567,9 @@ def build_fn_wrapper(op):
             for arg in tensor_args
             if arg in raw_kwargs and raw_kwargs[arg] is not None
         }
+        # Add _random_state to call_args if present (but it's excluded from caching key)
+        if "_random_state" in raw_kwargs and raw_kwargs["_random_state"] is not None:
+            call_args["_random_state"] = raw_kwargs["_random_state"]
         # If device is not specified, infer it from the inputs and call_args
         if device is None:
 
@@ -582,13 +607,15 @@ def build_fn_wrapper(op):
                     device.device_type = "mixed"
 
         # Get or create the operator instance that matches the arguments
+        # Exclude _random_state from caching key since it changes on every call
+        caching_call_arg_names = tuple(k for k in call_args.keys() if k != "_random_state")
         with nvtx.annotate(f"get instance {op.op_name}", domain="op_builder"):
             op_inst = op.get(
                 max_batch_size=max_batch_size,
                 name=None,
                 device=device,
                 num_inputs=len(inputs),
-                call_arg_names=tuple(call_args.keys()),
+                call_arg_names=caching_call_arg_names,
                 **init_args,
             )
 
@@ -608,7 +635,9 @@ def build_fn_wrapper(op):
 def build_fn_wrappers(all_ops):
     wrappers = []
     for op in all_ops:
-        has_random_state = op.schema.HasArgument("_random_state") and op.schema.IsTensorArgument("_random_state")
+        has_random_state = op.schema.HasArgument("_random_state") and op.schema.IsTensorArgument(
+            "_random_state"
+        )
         if op.op_name.startswith("_"):
             continue
         # Allow stateful operators with _random_state to have functional wrappers
