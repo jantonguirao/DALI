@@ -263,8 +263,10 @@ void NumpyReaderCPU::Prefetch() {
                       DomainTimeRange::kRed);
   DataReader<CPUBackend, NumpyFileWrapper, NumpyFileWrapper, true>::Prefetch();
 
-  if (!dont_use_mmap_)
-    return;
+  // Not the same as `dont_use_mmap_`: NumpyLoader::ReadSample decides per stream
+  // (`!opts.use_mmap || !current_file->CanMemoryMap()`), so a sample can need a deferred read
+  // even when the user did not ask for it - remote storage is never mappable. Samples the loader
+  // already provided leave `current_file` empty and are skipped below.
   auto &curr_batch = prefetched_batch_queue_[curr_batch_producer_];
 
   string previous_path;
@@ -277,11 +279,12 @@ void NumpyReaderCPU::Prefetch() {
     }
     auto &target = curr_batch[idx];
 
-    // if we pad last batch but we duplicate the samples from the previous one - a case
-    // with multiple unequal shards where we need to create a full duplicated batch
-    // so there is no need to read again this data
+    // The loader leaves `current_file` empty for samples it already provided: memory mapped ones,
+    // samples skipped by the image cache, and the duplicates created when padding the last batch.
+    // A batch can mix those with samples that still need a deferred read, so skip them one by one
+    // instead of stopping at the first.
     if (!target->current_file) {
-      break;
+      continue;
     }
     if (target->data.shares_data()) {
       target->data.Reset();
