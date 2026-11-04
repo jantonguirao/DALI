@@ -135,6 +135,9 @@ struct NvDecodeState {
   CUVIDSOURCEDATAPACKET packet = { 0 };
 
   uint8_t *decoded_frame_yuv = nullptr;
+
+  // Set by the sequence callback, which cannot throw, and reported after the parser returns.
+  std::string error;
 };
 
 struct BufferedFrame {
@@ -210,7 +213,11 @@ class DLL_PUBLIC FramesDecoderGpu : public FramesDecoderBase {
 
   static bool SupportsCodec(AVCodecID codec_id, uint8_t bit_depth = 8);
 
-  void InitGpuDecoder(CUVIDEOFORMAT *video_format);
+  /**
+   * @brief Gets the NVDEC decoder for the sequence. Returns false, with the reason stored in the
+   *        decode state, if the size of the decoded frames is not the size of the output.
+   */
+  bool InitGpuDecoder(CUVIDEOFORMAT *video_format);
 
   void CopyFrame(uint8_t *dst, const uint8_t *src) override;
 
@@ -258,6 +265,7 @@ class DLL_PUBLIC FramesDecoderGpu : public FramesDecoderBase {
   bool IsFullRange(CUVIDEOFORMAT *video_format) const;
 
   void InitGpuParser();
+  void ParseVideoData(CUVIDSOURCEDATAPACKET *packet);
 
   bool ReadNextFrameWithIndex(uint8_t *data);
 

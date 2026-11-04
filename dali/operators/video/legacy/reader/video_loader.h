@@ -33,11 +33,13 @@ extern "C" {
 #include <utility>
 #include <vector>
 #include <list>
+#include <optional>
 
 #include "dali/core/common.h"
 #include "dali/operators/reader/loader/loader.h"
 #include "dali/operators/video/legacy/reader/nvdecoder/nvdecoder.h"
 #include "dali/operators/video/legacy/reader/nvdecoder/sequencewrapper.h"
+#include "dali/operators/video/stream_crop.h"
 #include "dali/operators/video/video_utils.h"
 #include "dali/pipeline/util/worker_thread.h"
 
@@ -90,6 +92,11 @@ struct VideoFile {
   AVCodecContext* codec = nullptr;
 #endif
   av_unique_ptr<AVFormatContext> fmt_ctx_;
+
+  // The display area from the SPS of the stream. It overrides the size from the container.
+  std::optional<StreamCrop> crop_;
+  // The size of the frames: the display area if it is known, or the size from the container.
+  int width_ = 0, height_ = 0;
 
   VideoFileDesc file_desc;
   bool empty() const noexcept { return file_desc.filename.empty(); }
@@ -278,14 +285,13 @@ class VideoLoader : public Loader<GPUBackend, SequenceWrapper, true> {
       int s;
       for (s = start_frame; s < end_frame && s + total_count <= end_frame; s += step_) {
         frame_starts_.emplace_back(sequence_meta{
-            i, s, file_info_[i].label, codecpar(stream)->height, codecpar(stream)->width, count_});
+            i, s, file_info_[i].label, file.height_, file.width_, count_});
       }
       if (pad_sequences_ && s < end_frame) {
         for (; s < end_frame; s += step_) {
           int fcount = 1 + (end_frame - 1 - s) / stride_;
           frame_starts_.emplace_back(sequence_meta{i, s, file_info_[i].label,
-                                                   codecpar(stream)->height,
-                                                   codecpar(stream)->width, fcount});
+                                                   file.height_, file.width_, fcount});
         }
       }
     }

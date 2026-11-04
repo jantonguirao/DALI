@@ -22,6 +22,7 @@ extern "C" {
 
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -34,6 +35,7 @@ extern "C" {
 #include "dali/operators/video/legacy/reader/nvdecoder/cuvideoparser.h"
 #include "dali/operators/video/legacy/reader/nvdecoder/cuvideodecoder.h"
 #include "dali/operators/video/dynlink_nvcuvid/dynlink_nvcuvid.h"
+#include "dali/operators/video/stream_crop.h"
 #include "dali/util/thread_safe_queue.h"
 #if NVML_ENABLED
 #include "dali/util/nvml.h"
@@ -62,6 +64,8 @@ struct FrameReq {
   int stride;
   AVRational frame_base;
   bool full_range;
+  // The display area from the SPS of the stream. The parser does not report the left and top edge.
+  std::optional<StreamCrop> crop = std::nullopt;
 };
 
 enum class VidReqStatus {

@@ -293,6 +293,8 @@ bool FramesDecoderBase::SelectVideoStream(int stream_id) {
   LOG_LINE << "Selected stream " << stream_id << " with codec "
            << avcodec_get_name(codec_params_->codec_id) << " ("
            << codec_params_->codec_id << ")" << std::endl;
+  display_crop_ = ParseStreamCrop(codec_params_->codec_id, codec_params_->extradata,
+                                  codec_params_->extradata_size);
   if (!CheckDimensions())
     return false;
 

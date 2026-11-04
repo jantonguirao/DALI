@@ -19,6 +19,8 @@ import cv2
 import av
 import io
 import struct
+import shutil
+import subprocess
 import tempfile
 import nvidia.dali.types as types
 import glob
@@ -153,6 +155,282 @@ def test_video_reader_matching_frame_dimensions(width, image_type):
 
         output = pipeline().run()[0].at(0)
         np.testing.assert_allclose(output, mjpeg_reference(data, image_type), atol=2, rtol=0)
+
+
+def make_h264_video(width, height, num_frames=8):
+    """Encodes a moving gradient to an in-memory MP4. The SPS crops the size to a coded one."""
+    y, x = np.mgrid[:height, :width]
+    encoded = io.BytesIO()
+    with av.open(encoded, mode="w", format="mp4") as container:
+        stream = container.add_stream("libx264", rate=24)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        stream.options = {"g": "4", "bf": "0", "crf": "10"}
+        for i in range(num_frames):
+            pixels = np.stack(
+                ((x * 255 // width + 8 * i) % 256, y * 255 // height, (x + y + 20 * i) % 256),
+                axis=-1,
+            ).astype(np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return bytearray(encoded.getvalue())
+
+
+def set_mp4_container_size(data, width, height):
+    """Rewrites the size in the avc1 sample entry. The size in the SPS is not changed."""
+    offset = data.index(b"avc1", data.index(b"stsd")) + 28
+    struct.pack_into(">HH", data, offset, width, height)
+
+
+def decode_with_pyav(path):
+    with av.open(path) as container:
+        return np.stack([f.to_ndarray(format="rgb24") for f in container.decode(video=0)])
+
+
+def read_video_gpu(path, num_frames, reader):
+    @pipeline_def(batch_size=1, num_threads=2, device_id=0)
+    def pipeline():
+        if reader == "decoder":
+            data = fn.external_source(
+                source=lambda: [np.fromfile(path, dtype=np.uint8)], dtype=types.UINT8
+            )
+            return fn.decoders.video(data, device="mixed")
+        if reader == "legacy":
+            return fn.readers.video(
+                filenames=[path], sequence_length=num_frames, device="gpu", random_shuffle=False
+            )
+        return fn.experimental.readers.video(
+            filenames=[path], sequence_length=num_frames, device="gpu", random_shuffle=False
+        )
+
+    pipe = pipeline()
+    return np.array(pipe.run()[0].as_cpu().at(0))
+
+
+def check_stream_size_video(path, expected_shape, tolerance):
+    reference = decode_with_pyav(path)
+    assert reference.shape[1:] == expected_shape, reference.shape
+    for reader in ("reader", "decoder", "legacy"):
+        output = read_video_gpu(path, len(reference), reader)
+        assert output.shape == reference.shape, (reader, output.shape, reference.shape)
+        diff = np.abs(output.astype(int) - reference.astype(int)).mean()
+        assert diff < tolerance, (reader, diff)
+
+
+@params((300, 232, (320, 240)), (302, 230, (320, 240)), (304, 240, (320, 256)))
+def test_video_container_size_differs_from_stream_size(width, height, container_size):
+    """The output has the size from the SPS of the stream, not the one from the container."""
+    data = make_h264_video(width, height)
+    set_mp4_container_size(data, *container_size)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filename = os.path.join(tmpdir, "video.mp4")
+        with open(filename, "wb") as video:
+            video.write(data)
+        check_stream_size_video(filename, (height, width, 3), 3.5)
+
+
+class _BitReader:
+    def __init__(self, bits):
+        self.bits, self.pos = bits, 0
+
+    def u(self, n):
+        value = int(self.bits[self.pos : self.pos + n] or "0", 2)
+        self.pos += n
+        return value
+
+    def ue(self):
+        zeros = 0
+        while self.u(1) == 0:
+            zeros += 1
+        return (1 << zeros) - 1 + self.u(zeros)
+
+
+def _ue_bits(value):
+    code = bin(value + 1)[2:]
+    return "0" * (len(code) - 1) + code
+
+
+def _rbsp_to_nal_payload(bits):
+    bits += "1"
+    bits += "0" * (-len(bits) % 8)
+    data = bytes(int(bits[i : i + 8], 2) for i in range(0, len(bits), 8))
+    out = bytearray()
+    zeros = 0
+    for byte in data:
+        if zeros >= 2 and byte <= 3:
+            out.append(3)
+            zeros = 0
+        out.append(byte)
+        zeros = zeros + 1 if byte == 0 else 0
+    return bytes(out)
+
+
+def rewrite_sps_crop(sps, left, top, right, bottom):
+    """Replaces the cropping rectangle in a 4:2:0 progressive H.264 SPS (NAL with the header byte).
+
+    The offsets are in pixels."""
+    rbsp = bytearray()
+    zeros = 0
+    for byte in sps[1:]:
+        if zeros >= 2 and byte == 3:
+            zeros = 0
+            continue
+        rbsp.append(byte)
+        zeros = zeros + 1 if byte == 0 else 0
+    bits = "".join(format(b, "08b") for b in rbsp)
+    # the trailing bit and the padding
+    bits = bits[: bits.rindex("1")]
+    r = _BitReader(bits)
+    profile = r.u(8)
+    r.u(16)
+    r.ue()  # sps id
+    assert profile in (66, 77, 88, 100), "unsupported profile"
+    if profile == 100:
+        assert r.ue() == 1  # chroma_format_idc
+        r.ue()
+        r.ue()
+        r.u(1)
+        assert r.u(1) == 0  # no scaling matrices
+    r.ue()  # log2_max_frame_num_minus4
+    poc_type = r.ue()
+    assert poc_type in (0, 2), "unsupported poc type"
+    if poc_type == 0:
+        r.ue()
+    r.ue()  # max_num_ref_frames
+    r.u(1)
+    r.ue()  # width
+    r.ue()  # height
+    assert r.u(1) == 1  # frame_mbs_only
+    r.u(1)  # direct_8x8_inference
+    crop_flag_pos = r.pos
+    if r.u(1):
+        for _ in range(4):
+            r.ue()
+    rest = bits[r.pos :]
+    new = bits[:crop_flag_pos] + "1"
+    new += "".join(_ue_bits(v // 2) for v in (left, right, top, bottom))
+    return bytes([sps[0]]) + _rbsp_to_nal_payload(new + rest)
+
+
+def set_mp4_sps_crop(data, left, top, right, bottom):
+    """Rewrites the cropping rectangle in the SPS in the avcC box and fixes the sizes of the boxes
+    that contain it."""
+    avcc = data.index(b"avcC")
+    assert data.index(b"mdat") < data.index(b"moov"), "the sample offsets would change"
+    assert data[avcc + 9] & 0x1F == 1
+    sps_len = struct.unpack_from(">H", data, avcc + 10)[0]
+    sps_start = avcc + 12
+    sps = rewrite_sps_crop(bytes(data[sps_start : sps_start + sps_len]), left, top, right, bottom)
+    delta = len(sps) - sps_len
+    data[sps_start : sps_start + sps_len] = sps
+    struct.pack_into(">H", data, avcc + 10, len(sps))
+    # the sizes of the boxes that contain the SPS, from the top level down
+    containers = {b"moov": 8, b"trak": 8, b"mdia": 8, b"minf": 8, b"stbl": 8, b"stsd": 16}
+    containers[b"avc1"] = 86
+    pos = 0
+    while True:
+        size, kind = struct.unpack_from(">I4s", data, pos)
+        if pos + size > avcc and pos < avcc:
+            struct.pack_into(">I", data, pos, size + delta)
+            if kind == b"avcC" or kind not in containers:
+                break
+            pos += containers[kind]
+        else:
+            pos += size
+    return data
+
+
+def check_sps_crop_video(crop, expected_size, tolerance=3.5):
+    left, top, right, bottom = crop
+    data = make_h264_video(320, 240)
+    set_mp4_sps_crop(data, *crop)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filename = os.path.join(tmpdir, "cropped.mp4")
+        with open(filename, "wb") as video:
+            video.write(data)
+        check_stream_size_video(filename, (*expected_size, 3), tolerance)
+
+
+@params(
+    ((0, 0, 16, 8), (232, 304)),
+    ((64, 8, 0, 0), (232, 256)),
+    ((64, 8, 16, 8), (224, 240)),
+    ((64, 4, 2, 2), (234, 254)),
+)
+def test_video_sps_crop(crop, expected_size):
+    """The SPS crop of the stream is applied, including the offset of the left and top edge."""
+    check_sps_crop_video(crop, expected_size)
+
+
+@params(((2, 0, 0, 0),), ((0, 2, 0, 0),), ((6, 6, 0, 0),))
+def test_video_sps_crop_unaligned_origin(crop):
+    """NVDEC rounds the left and top offset down to a multiple of 4, so these are rejected."""
+    data = make_h264_video(320, 240)
+    set_mp4_sps_crop(data, *crop)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filename = os.path.join(tmpdir, "cropped.mp4")
+        with open(filename, "wb") as video:
+            video.write(data)
+        for reader in ("reader", "decoder", "legacy"):
+            with assert_raises(RuntimeError, glob="*multiples of 4*"):
+                read_video_gpu(filename, 4, reader)
+
+
+def ffmpeg_has_bsf(name):
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return False
+    out = subprocess.run([ffmpeg, "-hide_banner", "-bsfs"], capture_output=True, text=True)
+    return name in out.stdout
+
+
+def make_hevc_video(width, height, num_frames=8):
+    y, x = np.mgrid[:height, :width]
+    encoded = io.BytesIO()
+    with av.open(encoded, mode="w", format="mp4") as container:
+        stream = container.add_stream("libx265", rate=24)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        stream.options = {"x265-params": "log-level=none:keyint=4:bframes=0"}
+        for i in range(num_frames):
+            pixels = np.stack(
+                ((x * 255 // width + 8 * i) % 256, y * 255 // height, (x + y + 20 * i) % 256),
+                axis=-1,
+            ).astype(np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return encoded.getvalue()
+
+
+@params(
+    ("crop_bottom=8", (224, 300)),
+    ("crop_top=8", (224, 300)),
+    ("crop_left=64", (232, 236)),
+)
+def test_video_hevc_conformance_window(options, expected_size):
+    """The conformance window of an HEVC stream is applied, also if its size is not aligned."""
+    if not ffmpeg_has_bsf("hevc_metadata"):
+        raise SkipTest("ffmpeg with the hevc_metadata filter is not available")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plain = os.path.join(tmpdir, "plain.mp4")
+        cropped = os.path.join(tmpdir, "cropped.mp4")
+        with open(plain, "wb") as video:
+            video.write(make_hevc_video(300, 232))
+        subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-i", plain, "-c", "copy", "-bsf:v"]
+            + ["hevc_metadata=" + options, cropped],
+            check=True,
+        )
+        reference = decode_with_pyav(cropped)
+        assert reference.shape[1:] == (*expected_size, 3), reference.shape
+        output = read_video_gpu(cropped, len(reference), "reader")
+        assert output.shape == reference.shape, (output.shape, reference.shape)
+        diff = np.abs(output.astype(int) - reference.astype(int)).mean()
+        assert diff < 3.5, diff
 
 
 def assert_unsupported_cpu_codec(run_pipeline):

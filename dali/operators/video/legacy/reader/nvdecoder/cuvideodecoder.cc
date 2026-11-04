@@ -123,7 +123,8 @@ CUVideoDecoder& CUVideoDecoder::operator=(CUVideoDecoder&& other) {
 }
 
 void CUVideoDecoder::reconfigure(unsigned int height, unsigned int width,
-                                 unsigned int num_decode_surfaces) {
+                                 unsigned int num_decode_surfaces,
+                                 const decltype(CUVIDEOFORMAT::display_area) &display_area) {
     DALI_ENFORCE(NVCUVID_API_EXISTS(cuvidReconfigureDecoder),
                  "cuvidReconfigureDecoder API is not available.");
 
@@ -146,16 +147,25 @@ void CUVideoDecoder::reconfigure(unsigned int height, unsigned int width,
                  width * height / 256, " blocks calculated as ", width, "*", height, "/256, ",
                  " while the decoder supports up to", caps_.nMaxMBCount, " macroblocks"));
 
-    reconfigParams.display_area.bottom = decoder_info_.display_area.bottom = height;
-    reconfigParams.display_area.top = 0;
-    reconfigParams.display_area.left = 0;
-    reconfigParams.display_area.right = decoder_info_.display_area.right = width;
+    reconfigParams.display_area.bottom = display_area.bottom;
+    reconfigParams.display_area.top = display_area.top;
+    reconfigParams.display_area.left = display_area.left;
+    reconfigParams.display_area.right = display_area.right;
+    decoder_info_.display_area.bottom = display_area.bottom;
+    decoder_info_.display_area.top = display_area.top;
+    decoder_info_.display_area.left = display_area.left;
+    decoder_info_.display_area.right = display_area.right;
 
-    decoder_info_.ulTargetWidth = decoder_info_.ulWidth = width;
-    reconfigParams.ulTargetWidth = reconfigParams.ulWidth = width;
-
-    decoder_info_.ulTargetHeight = decoder_info_.ulHeight = height;
-    reconfigParams.ulTargetHeight = reconfigParams.ulHeight = height;
+    // the output has the size of the display area, which is smaller than the coded size if the
+    // stream is cropped
+    decoder_info_.ulWidth = width;
+    decoder_info_.ulHeight = height;
+    reconfigParams.ulWidth = width;
+    reconfigParams.ulHeight = height;
+    decoder_info_.ulTargetWidth = reconfigParams.ulTargetWidth =
+        display_area.right - display_area.left;
+    decoder_info_.ulTargetHeight = reconfigParams.ulTargetHeight =
+        display_area.bottom - display_area.top;
 
     decoder_info_.ulNumDecodeSurfaces =
         std::max(decoder_info_.ulNumDecodeSurfaces, static_cast<unsigned long>(num_decode_surfaces));
@@ -179,13 +189,18 @@ int CUVideoDecoder::initialize(CUVIDEOFORMAT* format) {
                                            ? 20UL
                                            : static_cast<unsigned long>(format->min_num_decode_surfaces) +
                                                  additional_decode_surfaces_;
+            const auto &area = format->display_area;
             if ((format->coded_width != decoder_info_.ulWidth) ||
                 (format->coded_height != decoder_info_.ulHeight) ||
+                (area.left != decoder_info_.display_area.left) ||
+                (area.top != decoder_info_.display_area.top) ||
+                (area.right != decoder_info_.display_area.right) ||
+                (area.bottom != decoder_info_.display_area.bottom) ||
                 (num_decode_surfaces > decoder_info_.ulNumDecodeSurfaces)) {
                 if (NVCUVID_API_EXISTS(cuvidReconfigureDecoder)) {
                     LOG_LINE << "reconfigure decoder";
                     CUVideoDecoder::reconfigure(format->coded_height, format->coded_width,
-                                                 num_decode_surfaces);
+                                                 num_decode_surfaces, format->display_area);
                 } else {
                     DALI_FAIL("Encountered a dynamic video resolution or decode-surface requirement "
                               "change. Install Nvidia driver version >=396 (x86) or >=415 "

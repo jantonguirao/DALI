@@ -36,7 +36,8 @@ class CUVideoDecoder {
 
   operator CUvideodecoder() const;
 
-  void reconfigure(unsigned int height, unsigned int width, unsigned int num_decode_surfaces);
+  void reconfigure(unsigned int height, unsigned int width, unsigned int num_decode_surfaces,
+                   const decltype(CUVIDEOFORMAT::display_area) &display_area);
   int initialize(CUVIDEOFORMAT* format);
   bool initialized() const;
 

@@ -13,6 +13,12 @@
 // limitations under the License.
 
 #include <cuda_runtime_api.h>
+#include <algorithm>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
 #include <exception>
 #include <random>
 #include <utility>
@@ -278,6 +284,57 @@ TEST_F(FramesDecoderGpuTest, DecoderCacheReusedForCroppedVideo) {
   // The decoder returned to the cache by the first one has to be reused.
   decode_first_frame();
   EXPECT_EQ(frame_dec_gpu_impl::NVDECDecodersCreated(), num_created);
+}
+
+// The container may declare a size that differs from the one in the SPS of the stream. The frames
+// have the size that the stream declares, as that is what is decoded.
+TEST_F(FramesDecoderGpuTest, StreamSizeOverridesContainerSize) {
+  std::string path = testing::dali_extra_path() + "/db/video/cfr/test_2.mp4";
+  std::ifstream in(path, std::ios::binary);
+  std::vector<char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  ASSERT_FALSE(data.empty());
+  auto stsd = std::search(data.begin(), data.end(), std::begin("stsd"), std::end("stsd") - 1);
+  ASSERT_NE(stsd, data.end());
+  auto avc1 = std::search(stsd, data.end(), std::begin("avc1"), std::end("avc1") - 1);
+  ASSERT_NE(avc1, data.end());
+  // The sample entry has the size after the 4 bytes of the type and 24 bytes of the other fields.
+  char *size = &*avc1 + 28;
+  auto get16 = [&](int i) { return (uint8_t(size[i]) << 8) | uint8_t(size[i + 1]); };
+  ASSERT_EQ(get16(0), 800);
+  ASSERT_EQ(get16(2), 600);
+  int container_w = 832, container_h = 608;
+  size[0] = container_w >> 8;
+  size[1] = container_w & 0xff;
+  size[2] = container_h >> 8;
+  size[3] = container_h & 0xff;
+  std::string patched = ::testing::TempDir() + "/container_size_differs.mp4";
+  {
+    std::ofstream out(patched, std::ios::binary);
+    out.write(data.data(), data.size());
+  }
+
+  auto read_frame = [&](const std::string &file, int expected_w, int expected_h) {
+    FramesDecoderGpu decoder(file);
+    EXPECT_TRUE(decoder.IsValid());
+    decoder.BuildIndex();
+    EXPECT_EQ(decoder.Width(), expected_w);
+    EXPECT_EQ(decoder.Height(), expected_h);
+    FramesIndexer indexer(file);
+    EXPECT_EQ(indexer.Width(), expected_w);
+    EXPECT_EQ(indexer.Height(), expected_h);
+    std::vector<uint8_t> frame(decoder.FrameSize());
+    DeviceBuffer<uint8_t> gpu_frame;
+    gpu_frame.resize(decoder.FrameSize());
+    EXPECT_TRUE(decoder.ReadNextFrame(gpu_frame.data()));
+    CUDA_CALL(cudaMemcpy(frame.data(), gpu_frame.data(), frame.size(), cudaMemcpyDeviceToHost));
+    return frame;
+  };
+  // a decoder from the cache is used in the second case, with the plain file decoded first
+  auto expected = read_frame(path, 800, 600);
+  auto actual = read_frame(patched, 800, 600);
+  EXPECT_EQ(actual, expected);
+  EXPECT_EQ(read_frame(path, 800, 600), expected);
+  std::remove(patched.c_str());
 }
 
 TEST_F(FramesDecoderGpuTest, IndexerGivesTheIndexOfTheDecoder) {

@@ -223,8 +223,9 @@ VideoFile& VideoLoader::get_or_open_file(const std::string &filename) {
               << filename << std::endl;
 
     auto stream = file.fmt_ctx_->streams[file.vid_stream_idx_];
-    int width = codecpar(stream)->width;
-    int height = codecpar(stream)->height;
+    auto par = codecpar(stream);
+    int width = par->width;
+    int height = par->height;
     auto codec_id = codecpar(stream)->codec_id;
 
     if (width == 0 || height == 0) {
@@ -234,14 +235,24 @@ VideoFile& VideoLoader::get_or_open_file(const std::string &filename) {
         return empty_file;
       }
 
-      width = codecpar(stream)->width;
-      height = codecpar(stream)->height;
-      codec_id = codecpar(stream)->codec_id;
+      width = par->width;
+      height = par->height;
+      codec_id = par->codec_id;
     }
+    file.crop_ = ParseStreamCrop(codec_id, par->extradata, par->extradata_size);
+    if (file.crop_) {
+      width = file.crop_->width();
+      height = file.crop_->height();
+    }
+    file.width_ = width;
+    file.height_ = height;
+    // The decoder is created for the coded size, which is not smaller than the display area.
+    int max_width = file.crop_ ? file.crop_->coded_width : width;
+    int max_height = file.crop_ ? file.crop_->coded_height : height;
 
     if (max_width_ == 0) {  // first file to open
-      max_width_ = width;
-      max_height_ = height;
+      max_width_ = max_width;
+      max_height_ = max_height;
       codec_id_ = codec_id;
 
     } else {  // already opened a file
@@ -249,12 +260,12 @@ VideoFile& VideoLoader::get_or_open_file(const std::string &filename) {
                    " is not the same codec as previous files");
 
       if (NVCUVID_API_EXISTS(cuvidReconfigureDecoder)) {
-        if (max_width_ < width) max_width_ = width;
-        if (max_height_ < height) max_height_ = height;
+        if (max_width_ < max_width) max_width_ = max_width;
+        if (max_height_ < max_height) max_height_ = max_height;
 
       } else {
-        if (max_width_ != width ||
-            max_height_ != height) {
+        if (max_width_ != max_width ||
+            max_height_ != max_height) {
             std::stringstream err;
             err << "File " << filename << " does not have the same resolution as previous files. ("
                 << width << "x" << height
@@ -435,6 +446,7 @@ void VideoLoader::read_file() {
   }
   auto stream = file.fmt_ctx_->streams[file.vid_stream_idx_];
   req.frame_base = file.frame_base_;
+  req.crop = file.crop_;
 
   if (vid_decoder_) {
       vid_decoder_->push_req(req);

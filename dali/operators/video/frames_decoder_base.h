@@ -25,6 +25,7 @@ extern "C" {
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,7 @@ extern "C" {
 #include "dali/core/unique_handle.h"
 #include "dali/pipeline/data/types.h"
 #include "dali/operators/video/color_space.h"
+#include "dali/operators/video/stream_crop.h"
 
 namespace dali {
 
@@ -230,14 +232,14 @@ class DLL_PUBLIC FramesDecoderBase {
    * @brief Width of a video frame in pixels
    */
   int Width() const {
-    return codec_params_->width;
+    return display_crop_ ? display_crop_->width() : codec_params_->width;
   }
 
   /**
    * @brief Height of a video frame in pixels
    */
   int Height() const {
-    return codec_params_->height;
+    return display_crop_ ? display_crop_->height() : codec_params_->height;
   }
 
   /**
@@ -436,6 +438,11 @@ class DLL_PUBLIC FramesDecoderBase {
   AVUniquePtr<AVFrame> frame_;
   AVUniquePtr<AVPacket> packet_;
   AVCodecParameters *codec_params_ = nullptr;
+  /**
+   * The display area that the SPS of the stream declares, if it could be read. It overrides the
+   * size in codec_params_, which is the size that the container declares and which may differ.
+   */
+  std::optional<StreamCrop> display_crop_;
   int stream_id_ = -1;
   bool is_file_open_ = false;
 

@@ -195,6 +195,18 @@ int NvDecoder::handle_sequence_(CUVIDEOFORMAT* format) {
     recv_queue_.front().full_range =
         static_cast<bool>(format->video_signal_description.video_full_range_flag) ||
         full_range_from_codecpar_;
+    const auto &crop = recv_queue_.front().crop;
+    if (crop && crop->MatchesCodedSize(format->coded_width, format->coded_height)) {
+      DALI_ENFORCE(crop->IsOriginSupported(),
+                   make_string("The video \"", recv_queue_.peek().filename,
+                               "\" crops the picture by ", crop->left, " columns on the left and ",
+                               crop->top, " rows on the top. The GPU decoder supports only "
+                               "offsets that are multiples of 4."));
+      format->display_area.left = crop->left;
+      format->display_area.top = crop->top;
+      format->display_area.right = crop->left + crop->width();
+      format->display_area.bottom = crop->top + crop->height();
+    }
     ret = decoder_.initialize(format);
   } catch (...) {
     ERROR_LOG << "Unable to decode file " << recv_queue_.peek().filename << '\n';

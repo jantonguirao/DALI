@@ -348,7 +348,8 @@ size_t NVDECDecodersCreated(int device_id) {
 
 int process_video_sequence(void *user_data, CUVIDEOFORMAT *video_format) {
   FramesDecoderGpu *frames_decoder = static_cast<FramesDecoderGpu*>(user_data);
-  frames_decoder->InitGpuDecoder(video_format);
+  if (!frames_decoder->InitGpuDecoder(video_format))
+    return 0;
 
   return video_format->min_num_decode_surfaces;
 }
@@ -442,15 +443,48 @@ bool FramesDecoderGpu::IsFullRange(CUVIDEOFORMAT *video_format) const {
          codec_params_->color_range == AVCOL_RANGE_JPEG;
 }
 
-void FramesDecoderGpu::InitGpuDecoder(CUVIDEOFORMAT *video_format) {
+bool FramesDecoderGpu::InitGpuDecoder(CUVIDEOFORMAT *video_format) {
   if (!nvdecode_state_->decoder) {
+    // The parser reports the right and bottom crop, but drops the left and top one, so the display
+    // area comes from the SPS. It is also the size of the output, which is fixed before this
+    // callback runs.
+    CUVIDEOFORMAT format = *video_format;
+    if (display_crop_ && display_crop_->MatchesCodedSize(format.coded_width, format.coded_height)) {
+      if (!display_crop_->IsOriginSupported()) {
+        nvdecode_state_->error = make_string(
+            "The video \"", Filename(), "\" crops the picture by ", display_crop_->left,
+            " columns on the left and ", display_crop_->top,
+            " rows on the top. The GPU decoder supports only offsets that are multiples of 4.");
+        return false;
+      }
+      format.display_area.left = display_crop_->left;
+      format.display_area.top = display_crop_->top;
+      format.display_area.right = display_crop_->left + display_crop_->width();
+      format.display_area.bottom = display_crop_->top + display_crop_->height();
+    }
+    int area_width = format.display_area.right - format.display_area.left;
+    int area_height = format.display_area.bottom - format.display_area.top;
+    if (area_width != Width() || area_height != Height()) {
+      nvdecode_state_->error = make_string(
+          "The video \"", Filename(), "\" is decoded as ", area_width, "x", area_height,
+          ", but its size was determined to be ", Width(), "x", Height(), ".");
+      return false;
+    }
     bool is_full_range = IsFullRange(video_format);
     conversion_type_ = image_type_ == DALI_RGB ?
                            is_full_range ? VIDEO_COLOR_SPACE_CONVERSION_TYPE_YUV_TO_RGB_FULL_RANGE :
                                            VIDEO_COLOR_SPACE_CONVERSION_TYPE_YUV_TO_RGB :
                            VIDEO_COLOR_SPACE_CONVERSION_TYPE_YUV_UPSAMPLE;
-    nvdecode_state_->decoder = frame_dec_gpu_impl::NVDECCache::GetDecoderFromCache(video_format);
+    nvdecode_state_->decoder = frame_dec_gpu_impl::NVDECCache::GetDecoderFromCache(&format);
   }
+  return true;
+}
+
+void FramesDecoderGpu::ParseVideoData(CUVIDSOURCEDATAPACKET *packet) {
+  nvdecode_state_->error.clear();
+  CUresult result = cuvidParseVideoData(nvdecode_state_->parser, packet);
+  DALI_ENFORCE(nvdecode_state_->error.empty(), nvdecode_state_->error);
+  CUDA_CALL(result);
 }
 
 void FramesDecoderGpu::InitGpuParser() {
@@ -732,7 +766,7 @@ bool FramesDecoderGpu::SendFrameToParser() {
   // Send packet to the nv decoder
   frame_returned_ = false;
   LOG_LINE << "Sending packet to the nv decoder, next pts=" << piped_pts_.front() << std::endl;
-  CUDA_CALL(cuvidParseVideoData(nvdecode_state_->parser, packet));
+  ParseVideoData(packet);
   LOG_LINE << "Packet sent to the nv decoder" << std::endl;
   current_pts_ = AV_NOPTS_VALUE;  // we are done with this packet. Next frame will come from a new packet
   return true;
@@ -886,7 +920,7 @@ void FramesDecoderGpu::SendLastPacket(bool flush) {
   packet->flags = CUVID_PKT_ENDOFSTREAM;
 
   // Send end of stream and process any remaining frames
-  CUDA_CALL(cuvidParseVideoData(nvdecode_state_->parser, packet));
+  ParseVideoData(packet);
 
   if (!flush) {
     // Process any remaining buffered frames in order
