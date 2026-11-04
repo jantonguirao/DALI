@@ -76,6 +76,7 @@ struct H264Params {
   bool frame_mbs_only = true;
   int l = 0, r = 0, t = 0, b = 0;
   bool has_crop = true;
+  int first_scaling_delta = 4;  // the first delta_scale of every scaling list
 };
 
 std::vector<uint8_t> H264Sps(const H264Params &p) {
@@ -99,7 +100,7 @@ std::vector<uint8_t> H264Sps(const H264Params &p) {
         if (present) {
           int size = i < 6 ? 16 : 64;
           // a few deltas, then a zero next scale which ends the list
-          w.se(4);
+          w.se(p.first_scaling_delta);
           w.se(-2);
           if (size > 2)
             w.se(-10);  // 8 + 4 - 2 - 10 = 0
@@ -222,11 +223,88 @@ TEST(StreamCropTest, H264HighProfile) {
       auto c = Parse(AvcC(H264Sps(p)));
       ASSERT_TRUE(c) << lists << " " << chroma;
       int ux = (chroma == 0 || chroma == 3) ? 1 : 2;
-      int uy = ux;
+      int uy = chroma == 1 ? 2 : 1;
       EXPECT_EQ(c->right, 5 * ux) << lists << " " << chroma;
       EXPECT_EQ(c->bottom, 3 * uy) << lists << " " << chroma;
     }
   }
+}
+
+TEST(StreamCropTest, H264Chroma422BottomCrop) {
+  for (bool frame_mbs_only : {true, false}) {
+    H264Params p;
+    p.profile = 122;
+    p.chroma_format_idc = 2;
+    p.frame_mbs_only = frame_mbs_only;
+    p.height_units = 8;
+    p.t = 1;
+    p.b = 3;
+    auto c = Parse(AvcC(H264Sps(p)));
+    ASSERT_TRUE(c) << frame_mbs_only;
+    int fy = frame_mbs_only ? 1 : 2;  // SubHeightC is 1 for 4:2:2
+    EXPECT_EQ(c->top, 1 * fy) << frame_mbs_only;
+    EXPECT_EQ(c->bottom, 3 * fy) << frame_mbs_only;
+  }
+}
+
+TEST(StreamCropTest, H264MalformedScalingList) {
+  H264Params p;
+  p.profile = 100;
+  p.scaling_lists = true;
+  EXPECT_TRUE(Parse(AvcC(H264Sps(p))));
+  for (int delta : {128, 200, -129, -1000}) {
+    p.first_scaling_delta = delta;
+    EXPECT_FALSE(Parse(AvcC(H264Sps(p)))) << delta;
+    EXPECT_FALSE(Parse(AnnexB(H264Sps(p)))) << delta;
+  }
+  // truncated inside the scaling lists
+  p.first_scaling_delta = 4;
+  auto sps = H264Sps(p);
+  sps.resize(12);
+  EXPECT_FALSE(Parse(AvcC(sps)));
+}
+
+TEST(StreamCropTest, H264MultipleSps) {
+  H264Params a, b;
+  a.r = 2;
+  b.r = 2;
+  auto sa = H264Sps(a);
+  auto sb = H264Sps(b);
+  auto make_avcc = [](const std::vector<uint8_t> &x, const std::vector<uint8_t> &y) {
+    std::vector<uint8_t> v = {1, 66, 0, 40, 0xff, 0xe2};
+    for (auto *s : {&x, &y}) {
+      v.push_back(s->size() >> 8);
+      v.push_back(s->size() & 0xff);
+      v.insert(v.end(), s->begin(), s->end());
+    }
+    v.insert(v.end(), {1, 0, 4, 0x68, 1, 2, 3});
+    return v;
+  };
+  auto make_annexb = [](const std::vector<uint8_t> &x, const std::vector<uint8_t> &y) {
+    std::vector<uint8_t> v = AnnexB(x);
+    auto more = AnnexB(y);
+    v.insert(v.end(), more.begin(), more.end());
+    return v;
+  };
+  // identical duplicates
+  auto c = Parse(make_avcc(sa, sb));
+  ASSERT_TRUE(c);
+  EXPECT_EQ(c->right, 4);
+  c = Parse(make_annexb(sa, sb));
+  ASSERT_TRUE(c);
+  EXPECT_EQ(c->right, 4);
+
+  // same coded size, different crops
+  b.r = 4;
+  sb = H264Sps(b);
+  EXPECT_FALSE(Parse(make_avcc(sa, sb)));
+  EXPECT_FALSE(Parse(make_annexb(sa, sb)));
+
+  // one of the SPS is invalid
+  b.r = 2000;
+  sb = H264Sps(b);
+  EXPECT_FALSE(Parse(make_avcc(sa, sb)));
+  EXPECT_FALSE(Parse(make_annexb(sa, sb)));
 }
 
 TEST(StreamCropTest, H264PocType1) {
@@ -351,6 +429,39 @@ TEST(StreamCropTest, Hevc) {
     ASSERT_TRUE(c) << layers;
     EXPECT_EQ(c->height(), 1080);
   }
+}
+
+TEST(StreamCropTest, HevcMultipleSps) {
+  auto a = HevcSps(1, 320, 240, 0, 2, 0, 0);
+  auto same = HevcSps(1, 320, 240, 0, 2, 0, 0);
+  auto other = HevcSps(1, 320, 240, 0, 4, 0, 0);
+  auto make_hvcc = [](const std::vector<uint8_t> &x, const std::vector<uint8_t> &y) {
+    std::vector<uint8_t> v(22, 0);
+    v[0] = 1;
+    v.push_back(1);
+    v.insert(v.end(), {33, 0, 2});
+    for (auto *s : {&x, &y}) {
+      v.push_back(s->size() >> 8);
+      v.push_back(s->size() & 0xff);
+      v.insert(v.end(), s->begin(), s->end());
+    }
+    return v;
+  };
+  auto make_annexb = [](const std::vector<uint8_t> &x, const std::vector<uint8_t> &y) {
+    std::vector<uint8_t> v = {0, 0, 0, 1};
+    v.insert(v.end(), x.begin(), x.end());
+    v.insert(v.end(), {0, 0, 0, 1});
+    v.insert(v.end(), y.begin(), y.end());
+    return v;
+  };
+  auto c = Parse(make_hvcc(a, same), AV_CODEC_ID_HEVC);
+  ASSERT_TRUE(c);
+  EXPECT_EQ(c->right, 4);
+  c = Parse(make_annexb(a, same), AV_CODEC_ID_HEVC);
+  ASSERT_TRUE(c);
+  EXPECT_EQ(c->right, 4);
+  EXPECT_FALSE(Parse(make_hvcc(a, other), AV_CODEC_ID_HEVC));
+  EXPECT_FALSE(Parse(make_annexb(a, other), AV_CODEC_ID_HEVC));
 }
 
 TEST(StreamCropTest, HevcChromaUnits) {

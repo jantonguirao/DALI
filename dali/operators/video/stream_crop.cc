@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "dali/operators/video/stream_crop.h"
+#include <utility>
 #include <vector>
 
 namespace dali {
@@ -82,15 +83,20 @@ class BitReader {
   bool error_ = false;
 };
 
-void SkipH264ScalingList(BitReader &br, int size) {
+// Returns false if the list is malformed (delta_scale out of [-128, 127] or truncated data).
+bool SkipH264ScalingList(BitReader &br, int size) {
   int last = 8, next = 8;
-  for (int j = 0; j < size && br.ok(); j++) {
+  for (int j = 0; j < size; j++) {
     if (next != 0) {
-      next = (last + br.se() + 256) % 256;
+      int32_t d = br.se();
+      if (!br.ok() || d < -128 || d > 127)
+        return false;
+      next = (last + d + 256) % 256;
     }
     if (next != 0)
       last = next;
   }
+  return br.ok();
 }
 
 // Sets the size of the picture and the offsets in the unit of luma samples.
@@ -128,8 +134,8 @@ std::optional<StreamCrop> ParseH264Sps(const uint8_t *nal, size_t size) {
       if (br.u(1)) {
         int n = chroma_format_idc != 3 ? 8 : 12;
         for (int i = 0; i < n && br.ok(); i++) {
-          if (br.u(1))
-            SkipH264ScalingList(br, i < 6 ? 16 : 64);
+          if (br.u(1) && !SkipH264ScalingList(br, i < 6 ? 16 : 64))
+            return std::nullopt;
         }
       }
       break;
@@ -173,7 +179,7 @@ std::optional<StreamCrop> ParseH264Sps(const uint8_t *nal, size_t size) {
     return std::nullopt;
   int array_type = separate_planes ? 0 : chroma_format_idc;
   int64_t unit_x = (array_type == 0 || array_type == 3) ? 1 : 2;
-  int64_t unit_y = ((array_type == 0 || array_type == 3) ? 1 : 2) * (2 - frame_mbs_only);
+  int64_t unit_y = (array_type == 1 ? 2 : 1) * (2 - frame_mbs_only);
   StreamCrop crop;
   if (!Finish(crop, width_mbs * 16, height_units * 16 * (2 - frame_mbs_only), l * unit_x,
               r * unit_x, t * unit_y, b * unit_y))
@@ -228,7 +234,34 @@ std::optional<StreamCrop> ParseHevcSps(const uint8_t *nal, size_t size) {
   return crop;
 }
 
+// Parses all the SPS NAL units and returns the crop, if they all parse and agree with each other.
+template <typename ParseSps>
+std::optional<StreamCrop> CommonCrop(const std::vector<std::pair<const uint8_t *, size_t>> &spss,
+                                     ParseSps &&parse_sps) {
+  std::optional<StreamCrop> result;
+  for (auto &sps : spss) {
+    auto crop = parse_sps(sps.first, sps.second);
+    if (!crop)
+      return std::nullopt;
+    if (result && !(*result == *crop))
+      return std::nullopt;
+    result = crop;
+  }
+  return result;
+}
+
+// Finds the end of the NAL unit that starts at `start` in an Annex B stream.
+int AnnexBNalEnd(const uint8_t *data, int size, int start) {
+  int end = start;
+  while (end + 2 < size && !(data[end] == 0 && data[end + 1] == 0 && data[end + 2] <= 1))
+    end++;
+  if (end + 2 >= size)
+    end = size;
+  return end;
+}
+
 std::optional<StreamCrop> ParseH264(const uint8_t *data, int size) {
+  std::vector<std::pair<const uint8_t *, size_t>> spss;
   if (size >= 7 && data[0] == 1) {  // avcC
     int num_sps = data[5] & 0x1f;
     int pos = 6;
@@ -240,27 +273,25 @@ std::optional<StreamCrop> ParseH264(const uint8_t *data, int size) {
       if (len < 1 || pos + len > size)
         return std::nullopt;
       if ((data[pos] & 0x1f) == 7)
-        return ParseH264Sps(data + pos, len);
+        spss.emplace_back(data + pos, len);
       pos += len;
     }
-    return std::nullopt;
+    return CommonCrop(spss, ParseH264Sps);
   }
   // Annex B
   for (int i = 0; i + 3 < size; i++) {
     if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && (data[i + 3] & 0x1f) == 7) {
       int start = i + 3;
-      int end = start;
-      while (end + 2 < size && !(data[end] == 0 && data[end + 1] == 0 && data[end + 2] <= 1))
-        end++;
-      if (end + 2 >= size)
-        end = size;
-      return ParseH264Sps(data + start, end - start);
+      int end = AnnexBNalEnd(data, size, start);
+      spss.emplace_back(data + start, end - start);
+      i = end - 1;
     }
   }
-  return std::nullopt;
+  return CommonCrop(spss, ParseH264Sps);
 }
 
 std::optional<StreamCrop> ParseHevc(const uint8_t *data, int size) {
+  std::vector<std::pair<const uint8_t *, size_t>> spss;
   if (size >= 23 && data[0] == 1) {  // hvcC
     int num_arrays = data[22];
     int pos = 23;
@@ -278,24 +309,21 @@ std::optional<StreamCrop> ParseHevc(const uint8_t *data, int size) {
         if (len < 2 || pos + len > size)
           return std::nullopt;
         if (type == 33)
-          return ParseHevcSps(data + pos, len);
+          spss.emplace_back(data + pos, len);
         pos += len;
       }
     }
-    return std::nullopt;
+    return CommonCrop(spss, ParseHevcSps);
   }
   for (int i = 0; i + 4 < size; i++) {
     if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && ((data[i + 3] >> 1) & 0x3f) == 33) {
       int start = i + 3;
-      int end = start;
-      while (end + 2 < size && !(data[end] == 0 && data[end + 1] == 0 && data[end + 2] <= 1))
-        end++;
-      if (end + 2 >= size)
-        end = size;
-      return ParseHevcSps(data + start, end - start);
+      int end = AnnexBNalEnd(data, size, start);
+      spss.emplace_back(data + start, end - start);
+      i = end - 1;
     }
   }
-  return std::nullopt;
+  return CommonCrop(spss, ParseHevcSps);
 }
 
 }  // namespace
