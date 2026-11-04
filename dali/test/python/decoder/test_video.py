@@ -413,6 +413,7 @@ def make_hevc_video(width, height, num_frames=8):
 )
 def test_video_hevc_conformance_window(options, expected_size):
     """The conformance window of an HEVC stream is applied, also if its size is not aligned."""
+    skip_if_m60()
     if not ffmpeg_has_bsf("hevc_metadata"):
         raise SkipTest("ffmpeg with the hevc_metadata filter is not available")
     with tempfile.TemporaryDirectory() as tmpdir:
