@@ -297,6 +297,11 @@ bool FramesDecoderBase::SelectVideoStream(int stream_id) {
                                   codec_params_->extradata_size);
   if (!CheckDimensions())
     return false;
+  // Raw streams (e.g. Annex B) have no extradata until avformat_find_stream_info is called
+  if (!display_crop_) {
+    display_crop_ = ParseStreamCrop(codec_params_->codec_id, codec_params_->extradata,
+                                    codec_params_->extradata_size);
+  }
 
   next_frame_idx_ = 0;
   can_seek_ = true;
