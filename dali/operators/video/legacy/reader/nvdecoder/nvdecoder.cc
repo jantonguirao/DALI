@@ -397,6 +397,17 @@ void NvDecoder::receive_frames(SequenceWrapper& sequence) {
       sequence.timestamps.push_back(frame_disp_info->timestamp * av_q2d(
             nv_time_base_));
       if (stop_) break;
+      if (static_cast<int64_t>(decoder_.width()) != sequence.width ||
+          static_cast<int64_t>(decoder_.height()) != sequence.height) {
+        frame_in_use_[frame.disp_info->picture_index] = false;
+        // An error captured in the decoder callbacks is the root cause of the mismatch
+        if (captured_exception_)
+          std::rethrow_exception(captured_exception_);
+        DALI_FAIL(make_string(
+            "The decoded frame size ", decoder_.width(), "x", decoder_.height(),
+            " does not match the allocated output size ", sequence.width, "x", sequence.height,
+            ". The video resolution probably changed mid-stream, which is not supported."));
+      }
       auto is_full_range = frame_full_range_[frame.disp_info->picture_index];
       auto conversion_type =  rgb_ ?
                         is_full_range ? VIDEO_COLOR_SPACE_CONVERSION_TYPE_YUV_TO_RGB_FULL_RANGE :
